@@ -10,7 +10,7 @@
 //!   --batch N               producer claim batch (default 64)
 //!   --ingress N --inbox N --outbox N   ring sizes
 //!   --baseline OPS          core ops/s for the eff column
-//!   --events on|off         also write event journals (default on)
+//!   --events on|off         also write event journals (default off — spec/BENCH.md §2.2)
 //!   --stage-threads J,E     journal / egress thread counts (default 1,1)
 //!
 //! Prints one RESULTS.md row to stdout; environment to stderr.
@@ -263,7 +263,7 @@ fn main() {
                     } else {
                         FsyncPolicy::every_n(fsync)
                     },
-                    events: args.get("--events").unwrap_or("on") == "on",
+                    events: args.get("--events").unwrap_or("off") == "on",
                     append: false,
                 }),
                 j => die(format!("--journal: unknown mode {j}")),

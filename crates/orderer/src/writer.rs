@@ -38,6 +38,14 @@ pub(crate) struct Marks {
     pub durable: Arc<AtomicU64>,
 }
 
+/// Call once on any thread that will own a [`ChunkWriter`]: std allocates
+/// a per-thread channel context on the thread's first blocking receive,
+/// which must happen at startup rather than when the disk first lags.
+pub(crate) fn prewarm_thread() {
+    let (_tx, rx) = sync_channel::<()>(1);
+    let _ = rx.recv_timeout(Duration::from_millis(1));
+}
+
 pub(crate) struct ChunkWriter {
     cur: Vec<u8>,
     last: u64,
@@ -58,6 +66,11 @@ impl ChunkWriter {
     ) -> io::Result<ChunkWriter> {
         let (tx, rx) = sync_channel::<Msg>(CHUNKS);
         let (pool_tx, pool) = sync_channel::<Vec<u8>>(CHUNKS);
+        // Block once on the empty pool now: std lazily allocates a channel's
+        // waiter state the first time a receive blocks, and that must not
+        // happen in steady state (when the disk first falls behind). The
+        // timeout must outlast std's spin phase so the waiter registers.
+        let _ = pool.recv_timeout(Duration::from_millis(1));
         for _ in 0..CHUNKS - 1 {
             pool_tx.send(Vec::with_capacity(CHUNK)).unwrap();
         }

@@ -933,6 +933,7 @@ struct JournalPart {
 /// §4). No syscalls here — the I/O threads write and fsync.
 fn journal_thread(shared: Arc<Shared>, mut parts: Vec<JournalPart>) {
     let _g = FailOnPanic(shared.clone(), "journal");
+    crate::writer::prewarm_thread();
     let mut idle_on = 0;
     loop {
         let mut total = 0;
@@ -1091,6 +1092,7 @@ struct EgressPart {
 /// Runs the egress plugs of a group of partitions.
 fn egress_thread(shared: Arc<Shared>, mut parts: Vec<EgressPart>, journaled: bool) {
     let _g = FailOnPanic(shared.clone(), "egress");
+    crate::writer::prewarm_thread();
     let mut idle_on = 0;
     loop {
         let mut total = 0;
