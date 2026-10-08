@@ -3,3 +3,4 @@ bench/
 *.run.cmd.jsonl
 *.setup.cmd.jsonl
 .DS_Store
+harness/

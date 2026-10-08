@@ -40,3 +40,25 @@ jobs:
           path: upstream/orderer
           fetch-depth: 0
       - run: UPSTREAM_DIR=upstream/orderer scripts/vendored.sh
+
+  # Down-axis differential fuzzing (spec repo scripts) against matcher-rust
+  # at the commit orderer-core was ported from (docs/VENDORED.md).
+  diffuzz:
+    runs-on: ubuntu-latest
+    env:
+      ORDERER_RUST_DIR: ${{ github.workspace }}
+      MATCHER_RUST_DIR: ${{ github.workspace }}/upstream/matcher-rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: abhijitkrm/orderer
+          path: upstream/orderer
+      - uses: actions/checkout@v4
+        with:
+          repository: abhijitkrm/matcher-rust
+          ref: 459a22a6730b740eb464854482d3819a5e6e4020
+          path: upstream/matcher-rust
+      - uses: dtolnay/rust-toolchain@stable
+      - run: upstream/orderer/scripts/diffuzz.sh 4 10000
+      - run: upstream/orderer/scripts/e2e.sh

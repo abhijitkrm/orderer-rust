@@ -115,3 +115,16 @@ See `BENCH.md` §3.
 | 0 | success |
 | 2 | usage error, malformed input, invalid configuration (`ROUTING.md` §3), corrupt journal (`JOURNAL.md` §5) |
 | other nonzero | internal failure (panic, invariant violation) |
+
+## 6. Discovery (how the spec repo's scripts find a harness)
+
+Every implementation repo provides, at its root:
+
+| Path | Contract |
+|---|---|
+| `scripts/build-harness.sh` | Builds the five tools and exposes them as executables `harness/bin/{orderrun,ordererfuzz,orderrecover,ordersnap,orderbench}`. With `CHECKED=1`, the build enables the implementation's internal invariant checks (§4.2). Wrapper scripts are fine for interpreted runtimes. `harness/` is gitignored. |
+| `scripts/test.sh` | Runs the implementation's full suite: golden vectors, orderer vectors, integration tests. Exits nonzero on failure. |
+
+The spec repo's `scripts/*.sh` find implementations as siblings
+(`../orderer-<lang>`, overridable with `ORDERER_<LANG>_DIR`). They skip
+absent implementations and use only these two entry points.
