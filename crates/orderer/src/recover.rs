@@ -9,7 +9,7 @@ use std::path::Path;
 use orderer_core::jsonflat::{get_str, get_u64};
 use orderer_core::{snapshot, BookConfig, Command, Event, MatchingCore, Symbol};
 
-use crate::journal::{read_cmd_dir, CmdRecord, CorruptJournal, JournalFormat};
+use crate::journal::{read_cmd_dir, same_book, CmdRecord, CorruptJournal, JournalFormat};
 use crate::pipeline::{meta_path, Initial, Snapshot};
 use crate::routing::PartitionMap;
 
@@ -150,7 +150,8 @@ impl<C> Recovery<C> {
 }
 
 /// spec/JOURNAL.md §5: snapshot (optional) + every command journal in
-/// `journal_dir`, merged by `iseq`, records after the cut replayed.
+/// `journal_dir`, merged by `iseq`, records after the cut replayed. The book
+/// config comes from the snapshot, else the journals' headers, else `book`.
 pub fn recover<C: MatchingCore>(
     book: BookConfig,
     map: &PartitionMap,
@@ -158,10 +159,27 @@ pub fn recover<C: MatchingCore>(
     journal: Option<(&Path, JournalFormat)>,
     emit: impl FnMut(u32, Symbol, u64, &Event),
 ) -> Result<Recovery<C>, RecoverError> {
+    // Journals are self-describing: without a snapshot their header gives
+    // the book config; with one, the two must agree.
+    let journals = match journal {
+        Some((dir, format)) => Some(read_cmd_dir(dir, format)?),
+        None => None,
+    };
+    let book = match (&journals, snapshot) {
+        (Some((h, _)), None) => h.book,
+        _ => book,
+    };
     let (book, mut cores) = restore::<C>(book, map, snapshot)?;
+    if let Some((h, _)) = &journals {
+        if !same_book(h.book, book) {
+            return Err(RecoverError::Snapshot(
+                "snapshot and journal book configs differ".into(),
+            ));
+        }
+    }
     let cut = snapshot.map_or(0, |s| s.iseq);
-    let records = match journal {
-        Some((dir, format)) => merge_journals(read_cmd_dir(dir, format)?.1, cut)?,
+    let records = match journals {
+        Some((_, recs)) => merge_journals(recs, cut)?,
         None => Vec::new(),
     };
     let last_iseq = records.last().map_or(cut, |r| r.0.max(cut));

@@ -1,0 +1,14 @@
+{"format":"orderer-journal/1","kind":"evt","partition":0,"partitions":2,"pmin":0,"pmax":1000000,"max_orders":65536,"index":"ladder"}
+{"seq":1,"ev":"accepted","symbol":10,"order_id":1,"leaves_qty":10}
+{"seq":1,"ev":"accepted","symbol":20,"order_id":1,"leaves_qty":10}
+{"seq":2,"ev":"trade","symbol":10,"maker":1,"taker":2,"price":100,"qty":4}
+{"seq":3,"ev":"closed","symbol":10,"order_id":2,"reason":"filled"}
+{"seq":2,"ev":"rejected","symbol":20,"order_id":2,"reason":"unknown_order_id"}
+{"seq":3,"ev":"trade","symbol":20,"maker":1,"taker":3,"price":100,"qty":6}
+{"seq":4,"ev":"closed","symbol":20,"order_id":3,"reason":"filled"}
+{"seq":4,"ev":"rejected","symbol":10,"order_id":2,"reason":"unknown_order_id"}
+{"seq":5,"ev":"accepted","symbol":10,"order_id":2,"leaves_qty":7}
+{"seq":5,"ev":"replaced","symbol":20,"order_id":1,"price":99,"qty":4}
+{"seq":6,"ev":"trade","symbol":20,"maker":1,"taker":4,"price":99,"qty":4}
+{"seq":7,"ev":"closed","symbol":20,"order_id":1,"reason":"filled"}
+{"seq":8,"ev":"closed","symbol":20,"order_id":4,"reason":"filled"}

@@ -73,10 +73,15 @@ Core-mode numbers should match the same language's `matcher_bench` within
    (matcher `BENCH.md` §2).
 6. `ops/s` = run commands ÷ timed wall seconds.
 
-**Journal configuration is fixed for gated rows:** binary journals
-(`JOURNAL.md` §2.2), fsync every 1024 records per partition. Rows with
-journals `off` or `jsonl` may be reported for analysis and must say so.
-They never count toward the gate.
+**Journal configuration is fixed for gated rows:** binary **command**
+journals (`JOURNAL.md` §2.2), group-committed with an fsync at least every
+1024 records per partition. The fsync must be the platform's real
+durability primitive (`F_FULLFSYNC` on macOS, `fsync`/`fdatasync` on
+Linux). Event journals are off in gated rows: they are derived data, which
+recovery re-derives byte-identically (`JOURNAL.md` §5), and they add about
+2.5× the bytes per command. Rows with event journals, `jsonl`, fsync off or
+journals off may be reported for analysis and must say so. They never
+count toward the gate.
 
 ## 3. `orderbench` CLI
 
@@ -87,8 +92,9 @@ orderbench <corpus-prefix> --mode pipe --partitions P [--producers N]
 ```
 
 - Reads `<prefix>.setup.cmd.jsonl` and `<prefix>.run.cmd.jsonl`.
-- Defaults: `--producers 1`, `--journal binary`, `--fsync 1024`,
-  `--journal-dir` a fresh temporary directory, `--tag` the prefix's basename.
+- Defaults: `--producers 1`, `--journal binary`, `--fsync 1024`, command
+  journals only, `--journal-dir` a fresh temporary directory, `--tag` the
+  prefix's basename.
 - Prints one report row (§4) to stdout and the environment to stderr.
   Implementation-specific tuning flags are allowed, and must be listed in
   the row's config column.
@@ -133,3 +139,6 @@ matcher `BENCH.md` §4 applies. In addition:
 - Report every tuning knob that differs from the implementation's defaults:
   ring sizes, wait strategies, batch sizes, thread placement.
 - Never meet the gate with journaling off.
+- Use corpora long enough to reach steady state. At least 10M run commands
+  for W6 pipeline rows: journal buffers absorb the first several hundred
+  milliseconds of I/O, so short runs overstate durable throughput.

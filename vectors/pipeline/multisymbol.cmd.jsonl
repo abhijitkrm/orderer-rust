@@ -1,0 +1,16 @@
+{"format":"matcher-vector/1","name":"engine_multisymbol","engine":true,"pmin":0,"pmax":1000000,"max_orders":65536,"index":"both"}
+{"cmd":"new","symbol":10,"order_id":1,"side":"bid","otype":"limit","price":100,"qty":10,"tif":"gtc"}
+{"cmd":"new","symbol":20,"order_id":1,"side":"bid","otype":"limit","price":100,"qty":10,"tif":"gtc"}
+{"cmd":"new","symbol":10,"order_id":2,"side":"ask","otype":"limit","price":100,"qty":4,"tif":"gtc"}
+{"cmd":"cancel","symbol":20,"order_id":2}
+{"cmd":"new","symbol":30,"order_id":1,"side":"bid","otype":"limit","price":90,"qty":5,"tif":"gtc"}
+{"cmd":"new","symbol":30,"order_id":7,"side":"ask","otype":"limit","price":50,"qty":3,"tif":"gtc"}
+{"cmd":"new","symbol":20,"order_id":3,"side":"ask","otype":"limit","price":100,"qty":6,"tif":"gtc"}
+{"cmd":"new","symbol":30,"order_id":8,"side":"bid","otype":"market","price":0,"qty":3,"tif":"ioc"}
+{"cmd":"replace","symbol":10,"order_id":2,"price":105,"qty":7}
+{"cmd":"new","symbol":10,"order_id":2,"side":"ask","otype":"limit","price":105,"qty":7,"tif":"gtc"}
+{"cmd":"replace","symbol":20,"order_id":1,"price":99,"qty":4}
+{"cmd":"new","symbol":20,"order_id":4,"side":"ask","otype":"limit","price":99,"qty":4,"tif":"ioc"}
+{"cmd":"cancel","symbol":30,"order_id":1}
+{"cmd":"cancel","symbol":30,"order_id":1}
+{"cmd":"new","symbol":40,"order_id":1,"side":"bid","otype":"limit","price":5,"qty":1,"tif":"post_only"}

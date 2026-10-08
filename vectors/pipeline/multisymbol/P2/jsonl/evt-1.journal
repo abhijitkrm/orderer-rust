@@ -1,0 +1,8 @@
+{"format":"orderer-journal/1","kind":"evt","partition":1,"partitions":2,"pmin":0,"pmax":1000000,"max_orders":65536,"index":"ladder"}
+{"seq":1,"ev":"accepted","symbol":30,"order_id":1,"leaves_qty":5}
+{"seq":2,"ev":"trade","symbol":30,"maker":1,"taker":7,"price":90,"qty":3}
+{"seq":3,"ev":"closed","symbol":30,"order_id":7,"reason":"filled"}
+{"seq":4,"ev":"closed","symbol":30,"order_id":8,"reason":"expired"}
+{"seq":5,"ev":"closed","symbol":30,"order_id":1,"reason":"cancelled"}
+{"seq":6,"ev":"rejected","symbol":30,"order_id":1,"reason":"unknown_order_id"}
+{"seq":1,"ev":"accepted","symbol":40,"order_id":1,"leaves_qty":1}

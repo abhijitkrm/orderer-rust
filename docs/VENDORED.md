@@ -12,7 +12,7 @@ re-vendored.
 
 - **upstream**: `orderer`
 - **repo**: `https://github.com/abhijitkrm/orderer`
-- **commit**: `8e8715690863668fc23a88c4fea875cc2bfc587c`
+- **commit**: `148424e1e9da2ad8ae22e3b7f56237b387fe40b0`
 - **paths**: `spec=spec vectors=vectors`
 
 `docs/VENDORED.sha256` holds every file's checksum. `scripts/vendored.sh`

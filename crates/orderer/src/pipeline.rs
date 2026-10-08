@@ -555,7 +555,7 @@ impl<C: MatchingCore> Pipeline<C> {
             let io = |e: std::io::Error| Error::Io(e.to_string());
             std::fs::create_dir_all(&cfg.dir).map_err(io)?;
             for p in 0..p_count {
-                let f = open_journal(cfg, Kind::Cmd, p, p_count).map_err(io)?;
+                let f = open_journal(cfg, Kind::Cmd, p, p_count, b.book).map_err(io)?;
                 let marks = Marks {
                     flushed: shared.flushed[p as usize].clone(),
                     durable: shared.durable[p as usize].clone(),
@@ -565,7 +565,7 @@ impl<C: MatchingCore> Pipeline<C> {
                         .map_err(io)?,
                 ));
                 evt_writers.push(if cfg.events {
-                    let f = open_journal(cfg, Kind::Evt, p, p_count).map_err(io)?;
+                    let f = open_journal(cfg, Kind::Evt, p, p_count, b.book).map_err(io)?;
                     let marks = Marks {
                         flushed: Arc::new(AtomicU64::new(0)),
                         durable: Arc::new(AtomicU64::new(0)),

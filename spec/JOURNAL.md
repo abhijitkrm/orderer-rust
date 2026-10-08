@@ -35,10 +35,11 @@ One record per command routed to the partition, in ingress order
 
 ### 2.1 JSONL
 
-Line 1 is the header:
+Line 1 is the header. It carries the writing pipeline's default book
+config, with matcher's key names, so journals are self-describing:
 
 ```json
-{"format":"orderer-journal/1","kind":"cmd","partition":0,"partitions":4}
+{"format":"orderer-journal/1","kind":"cmd","partition":0,"partitions":4,"pmin":0,"pmax":1000000,"max_orders":65536,"index":"ladder"}
 ```
 
 Each later line is matcher's canonical engine command line
@@ -61,20 +62,24 @@ Market orders keep matcher's canonical form: `"otype":"market"` with the
 ### 2.2 Binary
 
 All integers are **little-endian**. Signed values are two's complement.
-The file starts with a 32-byte header, followed by fixed-size records.
+The file starts with a 64-byte header, followed by fixed-size records.
 
-**Header (32 bytes, both kinds):**
+**Header (64 bytes, both kinds):**
 
 | Offset | Size | Field | Value |
 |---:|---:|---|---|
 | 0 | 4 | magic | ASCII `ORDJ` (`4F 52 44 4A`) |
 | 4 | 2 | version | `1` |
 | 6 | 1 | kind | `1` = cmd, `2` = evt |
-| 7 | 1 | reserved | `0` |
+| 7 | 1 | index | `0` = ladder, `1` = tree |
 | 8 | 4 | partition | `p` |
 | 12 | 4 | partitions | `P` |
 | 16 | 4 | record_size | `40` (cmd) or `48` (evt) |
-| 20 | 12 | reserved | zeros |
+| 20 | 4 | reserved | zeros |
+| 24 | 8 | pmin | i64 |
+| 32 | 8 | pmax | i64 |
+| 40 | 8 | max_orders | u64 |
+| 48 | 16 | reserved | zeros |
 
 **Command record (40 bytes):**
 
@@ -102,13 +107,16 @@ canonical **symbol-tagged** event line, byte-for-byte
 journals are directly comparable with matcher engine output.
 
 ```json
-{"format":"orderer-journal/1","kind":"evt","partition":0,"partitions":4}
+{"format":"orderer-journal/1","kind":"evt","partition":0,"partitions":4,"pmin":0,"pmax":1000000,"max_orders":65536,"index":"ladder"}
 {"seq":1,"ev":"accepted","symbol":10,"order_id":1,"leaves_qty":10}
 ```
 
 ### 3.2 Binary
 
 The header is as §2.2 with kind `2` and record_size `48`.
+
+The JSONL and binary headers carry the same fields. Every file of one
+journal directory must agree on `partitions` and the book config.
 
 **Event record (48 bytes):**
 
@@ -168,14 +176,17 @@ An orderer snapshot is **one** `matcher-snap/1` document (matcher
 Inputs: an optional snapshot with its sidecar (cut `N`; no snapshot means
 `N = 0` and empty books), and a journal directory.
 
-1. Restore the snapshot (§4).
-2. Read every partition's command journal. Records must have strictly
+1. Determine the book config. With a snapshot, use its header; the
+   journals' headers must match it, or recovery fails. Without one, use the
+   journals' headers.
+2. Restore the snapshot (§4).
+3. Read every partition's command journal. Records must have strictly
    increasing `iseq` within each file.
-3. Merge all records by `iseq` (they are disjoint across partitions). Drop
+4. Merge all records by `iseq` (they are disjoint across partitions). Drop
    records with `iseq ≤ N`.
-4. Apply the remaining records in `iseq` order, through the pipeline or
+5. Apply the remaining records in `iseq` order, through the pipeline or
    directly through engines routed per `ROUTING.md`.
-5. Resume sequencing at `max(N, highest replayed iseq) + 1`.
+6. Resume sequencing at `max(N, highest replayed iseq) + 1`.
 
 Determinism (matcher `SPEC.md` §7) guarantees the replayed events are
 byte-identical to the original event journal's records for those commands.
@@ -189,4 +200,5 @@ than diverge silently. The following are corruption, and harnesses exit 2:
 - Binary: a body length that is not a multiple of `record_size`, a bad magic
   or version, or a header whose partition or kind does not match the file
   name.
+- Headers in one directory that disagree on `partitions` or the book config.
 - Non-increasing `iseq` within a file.

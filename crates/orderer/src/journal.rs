@@ -7,7 +7,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use orderer_core::jsonflat::{get_str, get_u64, parse_command};
+use orderer_core::jsonflat::{get_i64, get_str, get_u64, parse_command};
 use orderer_core::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,29 +102,61 @@ pub fn journal_path(dir: &Path, kind: Kind, partition: u32, format: JournalForma
 
 // ---- encodings -------------------------------------------------------------
 
-pub const HEADER: usize = 32;
+pub const HEADER: usize = 64;
 pub const CMD_RECORD: usize = 40;
 pub const EVT_RECORD: usize = 48;
 const MAGIC: &[u8; 4] = b"ORDJ";
 
-/// spec/JOURNAL.md §2.1/§3.1 header line (with newline).
-pub fn jsonl_header(kind: Kind, partition: u32, partitions: u32) -> String {
+fn index_name(i: IndexKind) -> &'static str {
+    match i {
+        IndexKind::Ladder => "ladder",
+        IndexKind::Tree => "tree",
+    }
+}
+
+/// spec/JOURNAL.md §2.1/§3.1 header line (with newline). Carries the
+/// pipeline's default book config, so journals are self-describing.
+pub fn jsonl_header(kind: Kind, partition: u32, partitions: u32, book: BookConfig) -> String {
     format!(
-        "{{\"format\":\"orderer-journal/1\",\"kind\":\"{}\",\"partition\":{partition},\"partitions\":{partitions}}}\n",
-        kind.name()
+        "{{\"format\":\"orderer-journal/1\",\"kind\":\"{}\",\"partition\":{partition},\"partitions\":{partitions},\"pmin\":{},\"pmax\":{},\"max_orders\":{},\"index\":\"{}\"}}\n",
+        kind.name(),
+        book.price_min,
+        book.price_max,
+        book.max_orders,
+        index_name(book.index)
     )
 }
 
-/// spec/JOURNAL.md §2.2 header.
-pub fn binary_header(kind: Kind, partition: u32, partitions: u32) -> [u8; HEADER] {
+/// spec/JOURNAL.md §2.2 header (64 bytes).
+pub fn binary_header(
+    kind: Kind,
+    partition: u32,
+    partitions: u32,
+    book: BookConfig,
+) -> [u8; HEADER] {
     let mut h = [0u8; HEADER];
     h[0..4].copy_from_slice(MAGIC);
     h[4..6].copy_from_slice(&1u16.to_le_bytes());
     h[6] = kind.code();
+    h[7] = match book.index {
+        IndexKind::Ladder => 0,
+        IndexKind::Tree => 1,
+    };
     h[8..12].copy_from_slice(&partition.to_le_bytes());
     h[12..16].copy_from_slice(&partitions.to_le_bytes());
     h[16..20].copy_from_slice(&(kind.record_size() as u32).to_le_bytes());
+    h[24..32].copy_from_slice(&book.price_min.to_le_bytes());
+    h[32..40].copy_from_slice(&book.price_max.to_le_bytes());
+    h[40..48].copy_from_slice(&(book.max_orders as u64).to_le_bytes());
     h
+}
+
+/// Two book configs are the same config.
+pub fn same_book(a: BookConfig, b: BookConfig) -> bool {
+    a.price_min == b.price_min
+        && a.price_max == b.price_max
+        && a.max_orders == b.max_orders
+        && a.index == b.index
 }
 
 /// spec/JOURNAL.md §2.1 record line (no newline): matcher's canonical
@@ -352,19 +384,20 @@ pub fn open_journal(
     kind: Kind,
     partition: u32,
     partitions: u32,
+    book: BookConfig,
 ) -> io::Result<File> {
     let path = journal_path(&cfg.dir, kind, partition, cfg.format);
     if cfg.append && path.exists() {
-        check_header(&path, kind, partition, partitions, cfg.format)
+        check_header(&path, kind, partition, partitions, book, cfg.format)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         return OpenOptions::new().append(true).open(&path);
     }
     let mut f = File::create(&path)?;
     match cfg.format {
         JournalFormat::Jsonl => {
-            f.write_all(jsonl_header(kind, partition, partitions).as_bytes())?
+            f.write_all(jsonl_header(kind, partition, partitions, book).as_bytes())?
         }
-        JournalFormat::Binary => f.write_all(&binary_header(kind, partition, partitions))?,
+        JournalFormat::Binary => f.write_all(&binary_header(kind, partition, partitions, book))?,
     }
     Ok(f)
 }
@@ -447,25 +480,45 @@ fn corrupt(path: &Path, detail: impl Into<String>) -> CorruptJournal {
 }
 
 /// Header facts of a journal file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct JournalHeader {
     pub kind: Kind,
     pub partition: u32,
     pub partitions: u32,
+    /// The writing pipeline's default book config.
+    pub book: BookConfig,
 }
+
+impl PartialEq for JournalHeader {
+    fn eq(&self, o: &Self) -> bool {
+        self.kind == o.kind
+            && self.partition == o.partition
+            && self.partitions == o.partitions
+            && same_book(self.book, o.book)
+    }
+}
+
+impl Eq for JournalHeader {}
 
 fn check_header(
     path: &Path,
     kind: Kind,
     partition: u32,
     partitions: u32,
+    book: BookConfig,
     format: JournalFormat,
 ) -> Result<(), CorruptJournal> {
     let h = read_header(path, format)?;
-    if h.kind != kind || h.partition != partition || h.partitions != partitions {
+    let want = JournalHeader {
+        kind,
+        partition,
+        partitions,
+        book,
+    };
+    if h != want {
         return Err(corrupt(
             path,
-            format!("header {h:?} does not match {kind:?} partition {partition}/{partitions}"),
+            format!("header {h:?} does not match {want:?}"),
         ));
     }
     Ok(())
@@ -486,10 +539,23 @@ fn parse_jsonl_header(path: &Path, line: &str) -> Result<JournalHeader, CorruptJ
             .map(|v| v as u32)
             .ok_or_else(|| corrupt(path, format!("bad {k}")))
     };
+    let int = |k: &str| get_i64(line, k).ok_or_else(|| corrupt(path, format!("bad {k}")));
+    let book = BookConfig {
+        price_min: int("pmin")?,
+        price_max: int("pmax")?,
+        max_orders: get_u64(line, "max_orders").ok_or_else(|| corrupt(path, "bad max_orders"))?
+            as usize,
+        index: match get_str(line, "index") {
+            Some("ladder") => IndexKind::Ladder,
+            Some("tree") => IndexKind::Tree,
+            _ => return Err(corrupt(path, "bad index")),
+        },
+    };
     Ok(JournalHeader {
         kind,
         partition: num("partition")?,
         partitions: num("partitions")?,
+        book,
     })
 }
 
@@ -508,10 +574,21 @@ fn parse_binary_header(path: &Path, h: &[u8]) -> Result<JournalHeader, CorruptJo
     if u32_at(h, 16) as usize != kind.record_size() {
         return Err(corrupt(path, "bad record_size"));
     }
+    let index = match h[7] {
+        0 => IndexKind::Ladder,
+        1 => IndexKind::Tree,
+        _ => return Err(corrupt(path, "bad index")),
+    };
     Ok(JournalHeader {
         kind,
         partition: u32_at(h, 8),
         partitions: u32_at(h, 12),
+        book: BookConfig {
+            price_min: i64_at(h, 24),
+            price_max: i64_at(h, 32),
+            max_orders: u64_at(h, 40) as usize,
+            index,
+        },
     })
 }
 
@@ -632,7 +709,7 @@ pub fn read_evt_journal(
 pub fn read_cmd_dir(
     dir: &Path,
     format: JournalFormat,
-) -> Result<(u32, Vec<Vec<CmdRecord>>), CorruptJournal> {
+) -> Result<(JournalHeader, Vec<Vec<CmdRecord>>), CorruptJournal> {
     let first = journal_path(dir, Kind::Cmd, 0, format);
     let (h0, r0) = read_cmd_journal(&first, format)?;
     if h0.partition != 0 {
@@ -642,13 +719,13 @@ pub fn read_cmd_dir(
     for p in 1..h0.partitions {
         let path = journal_path(dir, Kind::Cmd, p, format);
         let (h, r) = read_cmd_journal(&path, format)?;
-        if h.partition != p || h.partitions != h0.partitions {
+        if h.partition != p || h.partitions != h0.partitions || !same_book(h.book, h0.book) {
             return Err(corrupt(
                 &path,
-                "header does not match its file name / partition count",
+                "header does not match its file name, partition count or book config",
             ));
         }
         all.push(r);
     }
-    Ok((h0.partitions, all))
+    Ok((h0, all))
 }

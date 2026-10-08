@@ -1,5 +1,142 @@
 {
   "format": "orderer-vectors-manifest/1",
-  "includes": ["matcher/manifest.json"],
-  "vectors": []
+  "includes": [
+    "matcher/manifest.json"
+  ],
+  "vectors": [
+    {
+      "name": "routing/hash",
+      "kind": "routing-hash",
+      "desc": "ROUTING.md \u00a72 reference values: symbols \u00d7 partition counts",
+      "files": [
+        "routing/hash.jsonl"
+      ]
+    },
+    {
+      "name": "routing/table",
+      "kind": "routing-table",
+      "desc": "ROUTING.md \u00a73 partition table overrides + hash fallback",
+      "files": [
+        "routing/table.map.jsonl",
+        "routing/table.expect.jsonl"
+      ]
+    },
+    {
+      "name": "regress/001_dense_map_churn",
+      "kind": "golden",
+      "desc": "matcher-format golden vector (P=1 byte-exact, every index mode)",
+      "files": [
+        "regress/001_dense_map_churn.cmd.jsonl",
+        "regress/001_dense_map_churn.evt.jsonl"
+      ]
+    },
+    {
+      "name": "pipeline/multisymbol",
+      "kind": "pipeline",
+      "desc": "orderrun listing + per-partition JSONL and binary journals at P=1,2,4",
+      "input": "pipeline/multisymbol.cmd.jsonl",
+      "partitions": [
+        1,
+        2,
+        4
+      ],
+      "files": [
+        "pipeline/multisymbol.cmd.jsonl",
+        "pipeline/multisymbol/P1/listing.evt",
+        "pipeline/multisymbol/P1/binary/cmd-0.bin",
+        "pipeline/multisymbol/P1/binary/evt-0.bin",
+        "pipeline/multisymbol/P1/jsonl/cmd-0.journal",
+        "pipeline/multisymbol/P1/jsonl/evt-0.journal",
+        "pipeline/multisymbol/P2/listing.evt",
+        "pipeline/multisymbol/P2/binary/cmd-0.bin",
+        "pipeline/multisymbol/P2/binary/cmd-1.bin",
+        "pipeline/multisymbol/P2/binary/evt-0.bin",
+        "pipeline/multisymbol/P2/binary/evt-1.bin",
+        "pipeline/multisymbol/P2/jsonl/cmd-0.journal",
+        "pipeline/multisymbol/P2/jsonl/cmd-1.journal",
+        "pipeline/multisymbol/P2/jsonl/evt-0.journal",
+        "pipeline/multisymbol/P2/jsonl/evt-1.journal",
+        "pipeline/multisymbol/P4/listing.evt",
+        "pipeline/multisymbol/P4/binary/cmd-0.bin",
+        "pipeline/multisymbol/P4/binary/cmd-1.bin",
+        "pipeline/multisymbol/P4/binary/cmd-2.bin",
+        "pipeline/multisymbol/P4/binary/cmd-3.bin",
+        "pipeline/multisymbol/P4/binary/evt-0.bin",
+        "pipeline/multisymbol/P4/binary/evt-1.bin",
+        "pipeline/multisymbol/P4/binary/evt-2.bin",
+        "pipeline/multisymbol/P4/binary/evt-3.bin",
+        "pipeline/multisymbol/P4/jsonl/cmd-0.journal",
+        "pipeline/multisymbol/P4/jsonl/cmd-1.journal",
+        "pipeline/multisymbol/P4/jsonl/cmd-2.journal",
+        "pipeline/multisymbol/P4/jsonl/cmd-3.journal",
+        "pipeline/multisymbol/P4/jsonl/evt-0.journal",
+        "pipeline/multisymbol/P4/jsonl/evt-1.journal",
+        "pipeline/multisymbol/P4/jsonl/evt-2.journal",
+        "pipeline/multisymbol/P4/jsonl/evt-3.journal"
+      ]
+    },
+    {
+      "name": "pipeline/fuzz_s11",
+      "kind": "pipeline",
+      "desc": "orderrun listing + per-partition JSONL and binary journals at P=1,2,4",
+      "input": "pipeline/fuzz_s11.cmd.jsonl",
+      "partitions": [
+        1,
+        2,
+        4
+      ],
+      "files": [
+        "pipeline/fuzz_s11.cmd.jsonl",
+        "pipeline/fuzz_s11/P1/listing.evt",
+        "pipeline/fuzz_s11/P1/binary/cmd-0.bin",
+        "pipeline/fuzz_s11/P1/binary/evt-0.bin",
+        "pipeline/fuzz_s11/P1/jsonl/cmd-0.journal",
+        "pipeline/fuzz_s11/P1/jsonl/evt-0.journal",
+        "pipeline/fuzz_s11/P2/listing.evt",
+        "pipeline/fuzz_s11/P2/binary/cmd-0.bin",
+        "pipeline/fuzz_s11/P2/binary/cmd-1.bin",
+        "pipeline/fuzz_s11/P2/binary/evt-0.bin",
+        "pipeline/fuzz_s11/P2/binary/evt-1.bin",
+        "pipeline/fuzz_s11/P2/jsonl/cmd-0.journal",
+        "pipeline/fuzz_s11/P2/jsonl/cmd-1.journal",
+        "pipeline/fuzz_s11/P2/jsonl/evt-0.journal",
+        "pipeline/fuzz_s11/P2/jsonl/evt-1.journal",
+        "pipeline/fuzz_s11/P4/listing.evt",
+        "pipeline/fuzz_s11/P4/binary/cmd-0.bin",
+        "pipeline/fuzz_s11/P4/binary/cmd-1.bin",
+        "pipeline/fuzz_s11/P4/binary/cmd-2.bin",
+        "pipeline/fuzz_s11/P4/binary/cmd-3.bin",
+        "pipeline/fuzz_s11/P4/binary/evt-0.bin",
+        "pipeline/fuzz_s11/P4/binary/evt-1.bin",
+        "pipeline/fuzz_s11/P4/binary/evt-2.bin",
+        "pipeline/fuzz_s11/P4/binary/evt-3.bin",
+        "pipeline/fuzz_s11/P4/jsonl/cmd-0.journal",
+        "pipeline/fuzz_s11/P4/jsonl/cmd-1.journal",
+        "pipeline/fuzz_s11/P4/jsonl/cmd-2.journal",
+        "pipeline/fuzz_s11/P4/jsonl/cmd-3.journal",
+        "pipeline/fuzz_s11/P4/jsonl/evt-0.journal",
+        "pipeline/fuzz_s11/P4/jsonl/evt-1.journal",
+        "pipeline/fuzz_s11/P4/jsonl/evt-2.journal",
+        "pipeline/fuzz_s11/P4/jsonl/evt-3.journal"
+      ]
+    },
+    {
+      "name": "recovery/fuzz_s11",
+      "kind": "recovery",
+      "desc": "orderrun prefix --snap at P=3, then orderrecover snap+tail at P=1 and P=3",
+      "snapshot_partitions": 3,
+      "partitions": [
+        1,
+        3
+      ],
+      "files": [
+        "recovery/fuzz_s11/prefix.cmd.jsonl",
+        "recovery/fuzz_s11/prefix.snap",
+        "recovery/fuzz_s11/prefix.snap.meta",
+        "recovery/fuzz_s11/recov.P1.evt",
+        "recovery/fuzz_s11/recov.P3.evt",
+        "recovery/fuzz_s11/tail.cmd.jsonl"
+      ]
+    }
+  ]
 }

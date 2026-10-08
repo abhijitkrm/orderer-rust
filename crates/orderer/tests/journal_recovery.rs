@@ -70,8 +70,12 @@ fn journals_snapshot_and_recovery_round_trip() {
 
             // command journals: every command once, iseq = file position,
             // each in its routed partition
-            let (parts, recs) = read_cmd_dir(&dir, format).unwrap();
-            assert_eq!(parts, p);
+            let (hdr, recs) = read_cmd_dir(&dir, format).unwrap();
+            assert_eq!(hdr.partitions, p);
+            assert!(
+                journal::same_book(hdr.book, cfg),
+                "journal header carries the book config"
+            );
             let mut merged: Vec<_> = Vec::new();
             for (q, rs) in recs.iter().enumerate() {
                 for &(iseq, sym, cmd) in rs {

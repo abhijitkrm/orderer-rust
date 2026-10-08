@@ -1,0 +1,5 @@
+{"format":"orderer-partition-map/1","partitions":4}
+{"symbol":10,"partition":3}
+{"symbol":20,"partition":3}
+{"symbol":4096,"partition":0}
+{"symbol":4294967295,"partition":1}
