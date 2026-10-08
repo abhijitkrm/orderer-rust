@@ -1,0 +1,4 @@
+{"format":"matcher-vector/1","name":"026_id_reuse"}
+{"seq":1,"ev":"accepted","order_id":1,"leaves_qty":10}
+{"seq":2,"ev":"closed","order_id":1,"reason":"cancelled"}
+{"seq":3,"ev":"accepted","order_id":1,"leaves_qty":5}

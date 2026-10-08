@@ -1,0 +1,4 @@
+{"format":"matcher-vector/1","name":"invalid_qty_price","pmin":1,"pmax":1000000,"max_orders":65536,"index":"ladder"}
+{"cmd":"new","order_id":1,"side":"bid","otype":"limit","price":100,"qty":0,"tif":"gtc"}
+{"cmd":"new","order_id":2,"side":"bid","otype":"limit","price":0,"qty":10,"tif":"gtc"}
+{"cmd":"new","order_id":3,"side":"bid","otype":"limit","price":2000000,"qty":10,"tif":"gtc"}

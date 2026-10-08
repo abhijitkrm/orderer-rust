@@ -1,0 +1,10 @@
+{"format":"matcher-vector/1","name":"038_seq_stress"}
+{"seq":1,"ev":"accepted","order_id":1,"leaves_qty":5}
+{"seq":2,"ev":"trade","maker":1,"taker":2,"price":99,"qty":5}
+{"seq":3,"ev":"closed","order_id":1,"reason":"filled"}
+{"seq":4,"ev":"accepted","order_id":2,"leaves_qty":5}
+{"seq":5,"ev":"rejected","order_id":99,"reason":"unknown_order_id"}
+{"seq":6,"ev":"rejected","order_id":1,"reason":"unknown_order_id"}
+{"seq":7,"ev":"trade","maker":2,"taker":3,"price":98,"qty":3}
+{"seq":8,"ev":"closed","order_id":3,"reason":"filled"}
+{"seq":9,"ev":"closed","order_id":2,"reason":"cancelled"}

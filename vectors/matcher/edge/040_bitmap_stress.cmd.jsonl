@@ -1,0 +1,9 @@
+{"format":"matcher-vector/1","name":"bitmap_stress","pmin":0,"pmax":1000000,"max_orders":65536,"index":"both"}
+{"cmd":"new","order_id":1,"side":"ask","otype":"limit","price":110,"qty":2,"tif":"gtc"}
+{"cmd":"new","order_id":2,"side":"ask","otype":"limit","price":105,"qty":2,"tif":"gtc"}
+{"cmd":"new","order_id":3,"side":"ask","otype":"limit","price":100,"qty":2,"tif":"gtc"}
+{"cmd":"new","order_id":4,"side":"bid","otype":"limit","price":90,"qty":2,"tif":"gtc"}
+{"cmd":"new","order_id":5,"side":"bid","otype":"limit","price":95,"qty":2,"tif":"gtc"}
+{"cmd":"new","order_id":6,"side":"bid","otype":"limit","price":97,"qty":2,"tif":"gtc"}
+{"cmd":"new","order_id":7,"side":"ask","otype":"market","price":0,"qty":6,"tif":"gtc"}
+{"cmd":"new","order_id":8,"side":"bid","otype":"limit","price":104,"qty":5,"tif":"gtc"}

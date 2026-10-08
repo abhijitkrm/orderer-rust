@@ -1,0 +1,5 @@
+{"format":"matcher-vector/1","name":"023_post_only_cross"}
+{"seq":1,"ev":"accepted","order_id":1,"leaves_qty":5}
+{"seq":2,"ev":"rejected","order_id":2,"reason":"post_only_would_cross"}
+{"seq":3,"ev":"rejected","order_id":3,"reason":"post_only_would_cross"}
+{"seq":4,"ev":"accepted","order_id":4,"leaves_qty":5}

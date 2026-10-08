@@ -1,0 +1,7 @@
+{"format":"matcher-vector/1","name":"book_full","pmin":0,"pmax":1000000,"max_orders":2,"index":"both"}
+{"cmd":"new","order_id":1,"side":"bid","otype":"limit","price":100,"qty":10,"tif":"gtc"}
+{"cmd":"new","order_id":2,"side":"ask","otype":"limit","price":105,"qty":10,"tif":"gtc"}
+{"cmd":"new","order_id":3,"side":"bid","otype":"limit","price":99,"qty":10,"tif":"gtc"}
+{"cmd":"new","order_id":4,"side":"ask","otype":"limit","price":104,"qty":5,"tif":"gtc"}
+{"cmd":"cancel","order_id":1}
+{"cmd":"new","order_id":5,"side":"bid","otype":"limit","price":98,"qty":5,"tif":"gtc"}

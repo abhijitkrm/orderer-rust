@@ -1,0 +1,6 @@
+{"format":"matcher-vector/1","name":"014_replace_price_loses_priority"}
+{"seq":1,"ev":"accepted","order_id":1,"leaves_qty":10}
+{"seq":2,"ev":"accepted","order_id":2,"leaves_qty":10}
+{"seq":3,"ev":"replaced","order_id":1,"price":101,"qty":10}
+{"seq":4,"ev":"trade","maker":2,"taker":3,"price":100,"qty":5}
+{"seq":5,"ev":"closed","order_id":3,"reason":"filled"}

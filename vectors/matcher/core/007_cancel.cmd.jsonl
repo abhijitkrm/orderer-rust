@@ -1,0 +1,3 @@
+{"format":"matcher-vector/1","name":"cancel","pmin":0,"pmax":1000000,"max_orders":65536,"index":"both"}
+{"cmd":"new","order_id":1,"side":"bid","otype":"limit","price":100,"qty":10,"tif":"gtc"}
+{"cmd":"cancel","order_id":1}

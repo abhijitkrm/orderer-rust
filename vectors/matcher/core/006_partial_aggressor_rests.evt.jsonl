@@ -1,0 +1,5 @@
+{"format":"matcher-vector/1","name":"006_partial_aggressor_rests"}
+{"seq":1,"ev":"accepted","order_id":1,"leaves_qty":5}
+{"seq":2,"ev":"trade","maker":1,"taker":2,"price":100,"qty":5}
+{"seq":3,"ev":"closed","order_id":1,"reason":"filled"}
+{"seq":4,"ev":"accepted","order_id":2,"leaves_qty":15}

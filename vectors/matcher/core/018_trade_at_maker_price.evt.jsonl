@@ -1,0 +1,4 @@
+{"format":"matcher-vector/1","name":"018_trade_at_maker_price"}
+{"seq":1,"ev":"accepted","order_id":1,"leaves_qty":5}
+{"seq":2,"ev":"trade","maker":1,"taker":2,"price":100,"qty":3}
+{"seq":3,"ev":"closed","order_id":2,"reason":"filled"}

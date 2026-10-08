@@ -1,0 +1,7 @@
+{"format":"matcher-vector/1","name":"029_book_full"}
+{"seq":1,"ev":"accepted","order_id":1,"leaves_qty":10}
+{"seq":2,"ev":"accepted","order_id":2,"leaves_qty":10}
+{"seq":3,"ev":"rejected","order_id":3,"reason":"book_full"}
+{"seq":4,"ev":"rejected","order_id":4,"reason":"book_full"}
+{"seq":5,"ev":"closed","order_id":1,"reason":"cancelled"}
+{"seq":6,"ev":"accepted","order_id":5,"leaves_qty":5}

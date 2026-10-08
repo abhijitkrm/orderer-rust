@@ -1,0 +1,2 @@
+{"format":"matcher-vector/1","name":"cancel_unknown","pmin":0,"pmax":1000000,"max_orders":65536,"index":"both"}
+{"cmd":"cancel","order_id":42}

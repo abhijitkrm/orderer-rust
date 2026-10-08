@@ -1,0 +1,17 @@
+[package]
+name = "orderer"
+description = "LMAX-style multi-core order-matching engine: sequenced ingress, journal-before-apply, symbol partitions, multicast egress"
+keywords = ["matching-engine", "order-book", "disruptor", "exchange", "lmax"]
+categories = ["concurrency", "finance"]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+orderer-core = { path = "../orderer-core", version = "0.1.0" }
+orderer-disruptor = { path = "../orderer-disruptor", version = "0.1.0" }

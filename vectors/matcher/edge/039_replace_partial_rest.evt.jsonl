@@ -1,0 +1,6 @@
+{"format":"matcher-vector/1","name":"039_replace_partial_rest"}
+{"seq":1,"ev":"accepted","order_id":1,"leaves_qty":5}
+{"seq":2,"ev":"accepted","order_id":2,"leaves_qty":10}
+{"seq":3,"ev":"trade","maker":1,"taker":2,"price":100,"qty":5}
+{"seq":4,"ev":"closed","order_id":1,"reason":"filled"}
+{"seq":5,"ev":"replaced","order_id":2,"price":100,"qty":3}

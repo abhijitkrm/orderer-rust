@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/orderer-core", "crates/orderer-disruptor", "crates/orderer"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+license = "MIT OR Apache-2.0"
+authors = ["Abhijit Kumar <abhijitkrm@gmail.com>"]
+repository = "https://github.com/abhijitkrm/orderer-rust"
+homepage = "https://github.com/abhijitkrm/orderer-rust"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+# Release-speed code with debug assertions (book invariants) for fuzz scripts.
+[profile.fuzz]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
+panic = "unwind"

@@ -1,0 +1,4 @@
+{"format":"matcher-vector/1","name":"010_invalid_qty_price"}
+{"seq":1,"ev":"rejected","order_id":1,"reason":"invalid_qty"}
+{"seq":2,"ev":"rejected","order_id":2,"reason":"invalid_price"}
+{"seq":3,"ev":"rejected","order_id":3,"reason":"invalid_price"}

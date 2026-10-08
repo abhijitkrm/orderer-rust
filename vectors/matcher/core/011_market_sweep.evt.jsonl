@@ -1,0 +1,8 @@
+{"format":"matcher-vector/1","name":"011_market_sweep"}
+{"seq":1,"ev":"accepted","order_id":1,"leaves_qty":5}
+{"seq":2,"ev":"accepted","order_id":2,"leaves_qty":5}
+{"seq":3,"ev":"trade","maker":1,"taker":3,"price":100,"qty":5}
+{"seq":4,"ev":"closed","order_id":1,"reason":"filled"}
+{"seq":5,"ev":"trade","maker":2,"taker":3,"price":101,"qty":5}
+{"seq":6,"ev":"closed","order_id":2,"reason":"filled"}
+{"seq":7,"ev":"closed","order_id":3,"reason":"expired"}

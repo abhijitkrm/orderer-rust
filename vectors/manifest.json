@@ -1,0 +1,5 @@
+{
+  "format": "orderer-vectors-manifest/1",
+  "includes": ["matcher/manifest.json"],
+  "vectors": []
+}

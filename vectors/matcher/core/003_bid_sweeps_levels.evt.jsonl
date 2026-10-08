@@ -1,0 +1,10 @@
+{"format":"matcher-vector/1","name":"003_bid_sweeps_levels"}
+{"seq":1,"ev":"accepted","order_id":1,"leaves_qty":5}
+{"seq":2,"ev":"accepted","order_id":2,"leaves_qty":5}
+{"seq":3,"ev":"accepted","order_id":3,"leaves_qty":5}
+{"seq":4,"ev":"trade","maker":1,"taker":4,"price":100,"qty":5}
+{"seq":5,"ev":"closed","order_id":1,"reason":"filled"}
+{"seq":6,"ev":"trade","maker":2,"taker":4,"price":101,"qty":5}
+{"seq":7,"ev":"closed","order_id":2,"reason":"filled"}
+{"seq":8,"ev":"trade","maker":3,"taker":4,"price":102,"qty":2}
+{"seq":9,"ev":"closed","order_id":4,"reason":"filled"}
