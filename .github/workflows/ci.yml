@@ -38,6 +38,7 @@ jobs:
         with:
           repository: abhijitkrm/orderer
           path: upstream/orderer
+          token: ${{ secrets.ORDERER_REPO_TOKEN || github.token }}
           fetch-depth: 0
       - run: UPSTREAM_DIR=upstream/orderer scripts/vendored.sh
 
@@ -54,6 +55,7 @@ jobs:
         with:
           repository: abhijitkrm/orderer
           path: upstream/orderer
+          token: ${{ secrets.ORDERER_REPO_TOKEN || github.token }}
       - uses: actions/checkout@v4
         with:
           repository: abhijitkrm/matcher-rust
