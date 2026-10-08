@@ -25,8 +25,8 @@ Handle::publish ─▶ ingress ─▶ router ─┬─▶ inbox[p] ─▶ engine
 
 Crates:
 
-- `orderer-core`: matcher-rust's book, verbatim apart from one bug fix
-  (`docs/VENDORED.md`), plus the `MatchingCore` seam.
+- `orderer-core`: matcher-rust's book, verbatim (`docs/VENDORED.md`), plus
+  the `MatchingCore` seam.
 - `orderer-disruptor`: the generic machinery.
 - `orderer`: the assembly, journals, recovery and harnesses.
 
@@ -159,9 +159,10 @@ through a P=2 journaled pipeline: zero.
 A port's threading is free, but its bytes are not. In order:
 
 1. Vendor `spec/` + `vectors/` at a tagged `orderer-spec/N`. Port
-   `matcher-<lang>` as the core. If the core uses an open-addressing order
-   map, run `vectors/regress/001_dense_map_churn`: matcher-cpp has the same
-   deletion bug orderer-rust fixed.
+   `matcher-<lang>` as the core. Run `vectors/regress/001_dense_map_churn`
+   early. It catches the open-addressing order-map deletion bug fixed in
+   matcher-rust 71a35f4 and matcher-cpp 1285f6c, so vendor a matcher at or
+   after those commits.
 2. **Routing**: `vectors/routing/hash.jsonl` must pass before anything else.
    Use unsigned 64-bit wrapping multiply and multiply-shift reduction; no
    `%`, no floats.

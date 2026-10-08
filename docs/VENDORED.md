@@ -24,12 +24,11 @@ the pinned commit.
 
 `crates/orderer-core/src/` is a port of
 [matcher-rust](https://github.com/abhijitkrm/matcher-rust) at
-`459a22a6730b740eb464854482d3819a5e6e4020`:
+`71a35f46ea4658dd4da89b270cd48d0af01571b5` (the commit that fixed the `OrderMap` deletion bug orderer found):
 
 | File | Status |
 |---|---|
-| `book.rs engine.rs index.rs level.rs pool.rs sink.rs types.rs journal.rs jsonflat.rs` | verbatim |
-| `ordermap.rs` | **bug fix**: backward-shift deletion moved the hole onto an entry that could not move, so a later shift could overwrite a live key. The key was silently dropped, the map drifted from the pool, and level totals underflowed. Found by orderer's dense-map allocation test. Also present in matcher-cpp's `internals.hpp`; matcher-java and matcher-ts are correct, and matcher-go uses a built-in map. Fixed here with a model-based regression test; to be fixed upstream |
+| `book.rs engine.rs index.rs level.rs ordermap.rs pool.rs sink.rs types.rs journal.rs jsonflat.rs` | verbatim (`ordermap.rs` carries the upstream fix for the deletion bug orderer reported) |
 | `snapshot.rs` | verbatim, plus `write_header`, `try_parse` (errors instead of panics) and `validate_book` |
 | `core.rs` | new: the `MatchingCore` seam, `FifoCore`, `NoopCore` |
 | `lib.rs` | crate docs and exports adapted |

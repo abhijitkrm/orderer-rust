@@ -92,11 +92,11 @@ impl OrderMap {
         // Backward-shift deletion (Knuth 6.4, Algorithm R): scan forward from
         // the hole; move back any entry whose probe chain crosses it.
         //
-        // orderer fix (matcher-rust 459a22a had `hole = j` in the can't-move
-        // branch too): an entry that cannot move must leave the hole where
-        // it is — only the scan advances. Moving the hole onto a live slot
-        // let a later shift overwrite that entry, silently dropping a key
-        // (map `len` then drifts from the pool, and level totals underflow).
+        // An entry that cannot move must leave the hole where it is — only
+        // the scan advances. (Before this fix the can't-move branch also
+        // moved the hole onto that live slot, so a later shift overwrote
+        // it: a key silently vanished, map `len` drifted from the pool, and
+        // level totals eventually underflowed.)
         let mut hole = i;
         let mut j = i;
         loop {
