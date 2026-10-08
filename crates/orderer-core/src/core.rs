@@ -96,7 +96,10 @@ impl MatchingCore for FifoCore {
         Ok(())
     }
 
+    /// Book invariants exist in builds with debug assertions (debug, the
+    /// `fuzz` profile); elsewhere this is a no-op.
     fn check_invariants(&self) {
+        #[cfg(debug_assertions)]
         for (_, book) in self.engine.books_iter() {
             book.check_invariants();
         }

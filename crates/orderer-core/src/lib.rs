@@ -23,6 +23,8 @@
 //! ```
 
 #![forbid(unsafe_code)]
+// Some vendored helpers serve only the debug-build invariant checks.
+#![cfg_attr(not(debug_assertions), allow(dead_code))]
 
 mod book;
 mod core;
