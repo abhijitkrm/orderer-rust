@@ -121,10 +121,12 @@ fn every_ok_publish_racing_shutdown_is_applied() {
 fn ack_pipeline(
     fsync: FsyncPolicy,
     acks: Arc<Mutex<Vec<u64>>>,
+    placement: JournalPlacement,
 ) -> (Pipeline<FifoCore>, std::path::PathBuf) {
     let dir = scratch(&format!("acks-{fsync:?}").replace(['{', '}', ' ', ':', ','], ""));
     let p = Pipeline::<FifoCore>::builder()
         .book_config(fuzz_cfg())
+        .journal_placement(placement)
         .partitions(2)
         .journal(JournalConfig {
             dir: dir.clone(),
@@ -145,12 +147,22 @@ fn ack_pipeline(
 #[test]
 fn acks_wait_for_fsync() {
     watchdog(120);
+    for placement in [JournalPlacement::Inline, JournalPlacement::Stage] {
+        acks_wait_for_fsync_with(placement);
+    }
+}
+
+fn acks_wait_for_fsync_with(placement: JournalPlacement) {
     let cmds = fuzz_corpus(4, 2_000, 6);
     let total_events = reference_lines(fuzz_cfg(), &cmds).len();
 
     // fsync effectively never (until shutdown): nothing may be acked
     let acks = Arc::new(Mutex::new(Vec::new()));
-    let (mut p, dir) = ack_pipeline(FsyncPolicy::Every(Duration::from_secs(3600)), acks.clone());
+    let (mut p, dir) = ack_pipeline(
+        FsyncPolicy::Every(Duration::from_secs(3600)),
+        acks.clone(),
+        placement,
+    );
     p.publish_batch(&cmds).unwrap();
     p.drain().unwrap();
     thread::sleep(Duration::from_millis(100));
@@ -168,6 +180,7 @@ fn acks_wait_for_fsync() {
             idle: Duration::from_millis(20),
         },
         acks.clone(),
+        placement,
     );
     p.publish_batch(&cmds).unwrap();
     p.drain().unwrap();

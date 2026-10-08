@@ -112,6 +112,20 @@ impl Default for Waits {
     }
 }
 
+/// Where command records are journaled (spec/PIPELINE.md §4: a record is
+/// handed to the journal before its command is applied — both satisfy it;
+/// neither is observable).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JournalPlacement {
+    /// LMAX's diamond: a journal consumer runs ahead of the engine on the
+    /// partition inbox, on its own thread(s). Engines never encode records.
+    Stage,
+    /// The engine thread encodes each record into its partition's journal
+    /// chunk immediately before applying the command. No journal thread and
+    /// no extra hop — the better trade when cores are scarce.
+    Inline,
+}
+
 /// Starting state for a pipeline built after recovery.
 pub struct Initial<C> {
     /// One core per partition, already restored/replayed.
@@ -135,6 +149,7 @@ pub struct PipelineBuilder<C> {
     initial: Option<Initial<C>>,
     journal_threads: Option<usize>,
     egress_threads: Option<usize>,
+    placement: JournalPlacement,
 }
 
 impl<C: MatchingCore> Default for PipelineBuilder<C> {
@@ -143,9 +158,11 @@ impl<C: MatchingCore> Default for PipelineBuilder<C> {
             book: BookConfig::default(),
             partitions: 1,
             map: None,
-            ingress: 1 << 16,
-            inbox: 1 << 14,
-            outbox: 1 << 15,
+            // Phase-6 tuned (docs RESULTS): smaller rings cut queueing latency
+            // ~4× at saturation and fit L2; 4× smaller again costs throughput.
+            ingress: 1 << 14,
+            inbox: 1 << 12,
+            outbox: 1 << 13,
             waits: Waits::default(),
             journal: None,
             egress: Vec::new(),
@@ -154,6 +171,7 @@ impl<C: MatchingCore> Default for PipelineBuilder<C> {
             initial: None,
             journal_threads: None,
             egress_threads: None,
+            placement: JournalPlacement::Inline,
         }
     }
 }
@@ -217,6 +235,12 @@ impl<C: MatchingCore> PipelineBuilder<C> {
     /// Check book invariants after every command (fuzzing; slow).
     pub fn check_invariants(mut self, on: bool) -> Self {
         self.check_invariants = on;
+        self
+    }
+
+    /// Where command records are encoded (default [`JournalPlacement::Inline`]).
+    pub fn journal_placement(mut self, placement: JournalPlacement) -> Self {
+        self.placement = placement;
         self
     }
 
@@ -592,7 +616,8 @@ impl<C: MatchingCore> Pipeline<C> {
 
         for (p, core) in (0..p_count).zip(cores) {
             let mut ib = RingBuilder::<CmdMsg>::new(b.inbox);
-            let jid = journaled.then(|| ib.consumer_with(&[], b.waits.journal));
+            let staged = journaled && b.placement == JournalPlacement::Stage;
+            let jid = staged.then(|| ib.consumer_with(&[], b.waits.journal));
             let deps: Vec<_> = jid.into_iter().collect();
             let eid = ib.consumer_with(&deps, b.waits.engine);
             let (inbox, inbox_cons) = ib.build_single();
@@ -623,8 +648,18 @@ impl<C: MatchingCore> Pipeline<C> {
                 let cons = inbox_cons[eid.index()].take().unwrap();
                 let sh = shared.clone();
                 let check = b.check_invariants;
+                let inline = if journaled && !staged {
+                    Some(InlineJournal {
+                        w: cmd_writers[p as usize].take().unwrap(),
+                        format: b.journal.as_ref().unwrap().format,
+                        scratch: String::with_capacity(MAX_RECORD),
+                        last_handoff: Instant::now(),
+                    })
+                } else {
+                    None
+                };
                 threads.push(spawn("engine", p, move || {
-                    engine_thread(sh, cons, outbox, core, check)
+                    engine_thread(sh, cons, outbox, core, check, inline)
                 }));
             }
             let ctx = EgressCtx {
@@ -652,7 +687,7 @@ impl<C: MatchingCore> Pipeline<C> {
                 stopped: false,
             });
         }
-        if journaled {
+        if journaled && b.placement == JournalPlacement::Stage {
             for (i, parts) in journal_groups.into_iter().enumerate() {
                 let sh = shared.clone();
                 threads.push(spawn("journal", i as u32, move || {
@@ -872,6 +907,7 @@ fn router_thread(
     next_iseq: u64,
 ) {
     let _g = FailOnPanic(shared.clone(), "router");
+    crate::affinity::set_current(crate::affinity::Role::Hot);
     let mut iseq = next_iseq - 1; // last assigned
     let mut stop = false;
     while !stop {
@@ -933,6 +969,7 @@ struct JournalPart {
 /// §4). No syscalls here — the I/O threads write and fsync.
 fn journal_thread(shared: Arc<Shared>, mut parts: Vec<JournalPart>) {
     let _g = FailOnPanic(shared.clone(), "journal");
+    crate::affinity::set_current(crate::affinity::Role::Background);
     crate::writer::prewarm_thread();
     let mut idle_on = 0;
     loop {
@@ -982,19 +1019,40 @@ fn journal_thread(shared: Arc<Shared>, mut parts: Vec<JournalPart>) {
     }
 }
 
+/// Command journal written by the engine thread itself
+/// ([`JournalPlacement::Inline`]).
+struct InlineJournal {
+    w: ChunkWriter,
+    format: JournalFormat,
+    scratch: String,
+    last_handoff: Instant,
+}
+
 fn engine_thread<C: MatchingCore>(
     shared: Arc<Shared>,
     mut inbox: Consumer<CmdMsg>,
     mut out: SingleProducer<EvtMsg>,
     mut core: C,
     check_invariants: bool,
+    mut journal: Option<InlineJournal>,
 ) {
     let _g = FailOnPanic(shared.clone(), "engine");
+    crate::affinity::set_current(crate::affinity::Role::Hot);
+    if journal.is_some() {
+        crate::writer::prewarm_thread();
+    }
     let mut stop = false;
-    while !stop {
-        let r = inbox.wait_poll(|m, _, eob| {
+    loop {
+        let mut force = false;
+        let n = inbox.poll(|m, _, eob| {
             match m.body {
                 Body::Cmd(cmd) => {
+                    if let Some(j) = journal.as_mut() {
+                        // journal-before-apply, in-thread
+                        j.w.reserve(MAX_RECORD);
+                        push_cmd(j.w.buf(), j.format, m.iseq, m.symbol, &cmd, &mut j.scratch);
+                        j.w.record(m.iseq);
+                    }
                     let (iseq, t_pub) = (m.iseq, m.t_pub);
                     core.apply(m.symbol, cmd, &mut |sym, seq, ev| {
                         let _ = out.stage(|e| {
@@ -1022,6 +1080,20 @@ fn engine_thread<C: MatchingCore>(
                         drop(g);
                         shared.snap_cv.notify_all();
                     }
+                    match ctl {
+                        Control::Shutdown => stop = true,
+                        Control::Barrier { .. } | Control::Snapshot { .. } => force = true,
+                        Control::Nop => {}
+                    }
+                    if stop {
+                        // everything this partition journaled is written
+                        // (and per policy synced) before egress shuts down
+                        if let Some(j) = journal.as_mut() {
+                            if let Err(e) = j.w.finish() {
+                                shared.fail(format!("journal: {e}"));
+                            }
+                        }
+                    }
                     let _ = out.stage(|e| {
                         e.iseq = m.iseq;
                         e.seq = 0;
@@ -1029,17 +1101,26 @@ fn engine_thread<C: MatchingCore>(
                         e.symbol = 0;
                         e.body = EvtBody::Ctl(ctl);
                     });
-                    if ctl == Control::Shutdown {
-                        stop = true;
-                    }
                 }
             }
             if eob {
                 out.commit();
             }
         });
-        if r.is_err() {
+        if stop || inbox.is_alerted() {
             break;
+        }
+        if let Some(j) = journal.as_mut() {
+            if j.w.pending() > 0 && (force || (n == 0 && j.last_handoff.elapsed() >= HANDOFF_IDLE))
+            {
+                j.w.hand_off();
+                j.last_handoff = Instant::now();
+            }
+        }
+        if n == 0 {
+            inbox.idle();
+        } else {
+            inbox.reset_idle();
         }
     }
     out.commit();
@@ -1092,6 +1173,7 @@ struct EgressPart {
 /// Runs the egress plugs of a group of partitions.
 fn egress_thread(shared: Arc<Shared>, mut parts: Vec<EgressPart>, journaled: bool) {
     let _g = FailOnPanic(shared.clone(), "egress");
+    crate::affinity::set_current(crate::affinity::Role::Background);
     crate::writer::prewarm_thread();
     let mut idle_on = 0;
     loop {

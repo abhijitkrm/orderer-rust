@@ -25,8 +25,11 @@
 //! p.shutdown().unwrap();
 //! ```
 
-#![forbid(unsafe_code)]
+// `unsafe` is denied crate-wide; the only exception is the feature-gated
+// placement shim in `affinity` (one FFI call).
+#![deny(unsafe_code)]
 
+pub mod affinity;
 pub mod egress;
 #[doc(hidden)]
 pub mod harness;
@@ -44,5 +47,7 @@ pub use egress::{
 pub use journal::{FsyncPolicy, JournalConfig, JournalFormat};
 pub use msg::{Body, CmdMsg, Control, EvtBody, EvtMsg};
 pub use orderer_disruptor::WaitStrategy;
-pub use pipeline::{meta_path, Error, Handle, Initial, Pipeline, PipelineBuilder, Snapshot, Waits};
+pub use pipeline::{
+    meta_path, Error, Handle, Initial, JournalPlacement, Pipeline, PipelineBuilder, Snapshot, Waits,
+};
 pub use routing::{hash_partition, PartitionMap, RoutingError};

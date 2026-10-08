@@ -31,11 +31,24 @@ fn run_with_snapshot(
     p: u32,
     jc: &JournalConfig,
 ) -> (Snapshot, Vec<Vec<String>>) {
+    run_placed(cfg, cmds, cut, p, jc, JournalPlacement::Inline)
+}
+
+fn run_placed(
+    cfg: BookConfig,
+    cmds: &[(Symbol, Command)],
+    cut: usize,
+    p: u32,
+    jc: &JournalConfig,
+    placement: JournalPlacement,
+) -> (Snapshot, Vec<Vec<String>>) {
     let (collect, events) = Collect::new(true);
     let mut pl = Pipeline::<FifoCore>::builder()
         .book_config(cfg)
         .partitions(p)
         .ring_sizes(512, 128, 128)
+        .journal_placement(placement)
+        .stage_threads(2, 1)
         .journal(jc.clone())
         .egress(collect)
         .build()
@@ -50,13 +63,18 @@ fn run_with_snapshot(
 #[test]
 fn journals_snapshot_and_recovery_round_trip() {
     let cfg = fuzz_cfg();
-    for format in [JournalFormat::Jsonl, JournalFormat::Binary] {
+    for (format, placement) in [
+        (JournalFormat::Jsonl, JournalPlacement::Inline),
+        (JournalFormat::Binary, JournalPlacement::Inline),
+        (JournalFormat::Jsonl, JournalPlacement::Stage),
+        (JournalFormat::Binary, JournalPlacement::Stage),
+    ] {
         for p in [1u32, 3] {
-            let dir = scratch(&format!("jr-{format:?}-{p}"));
+            let dir = scratch(&format!("jr-{format:?}-{placement:?}-{p}"));
             let jc = journal_cfg(&dir, format);
             let cmds = fuzz_corpus(21 + p as u64, 5_000, 8);
             let cut = 2_000;
-            let (snap, collected) = run_with_snapshot(cfg, &cmds, cut, p, &jc);
+            let (snap, collected) = run_placed(cfg, &cmds, cut, p, &jc, placement);
             let all_ref = reference_lines(cfg, &cmds);
             let prefix_len = reference_lines(cfg, &cmds[..cut]).len();
 

@@ -74,9 +74,10 @@ impl ChunkWriter {
         for _ in 0..CHUNKS - 1 {
             pool_tx.send(Vec::with_capacity(CHUNK)).unwrap();
         }
-        let io = std::thread::Builder::new()
-            .name(name)
-            .spawn(move || io_thread(file, rx, pool_tx, fsync, marks))?;
+        let io = std::thread::Builder::new().name(name).spawn(move || {
+            crate::affinity::set_current(crate::affinity::Role::Background);
+            io_thread(file, rx, pool_tx, fsync, marks)
+        })?;
         Ok(ChunkWriter {
             cur: Vec::with_capacity(CHUNK),
             last: 0,

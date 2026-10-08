@@ -9,9 +9,11 @@
 //!   --waits relaxed|low     wait strategies (low: router + engines busy-spin)
 //!   --batch N               producer claim batch (default 64)
 //!   --ingress N --inbox N --outbox N   ring sizes
-//!   --baseline OPS          core ops/s for the eff column
+//!   --baseline OPS          core *untimed* ops/s for the eff column (the core
+//!                           row reports it as `untimed=` in its config column)
 //!   --events on|off         also write event journals (default off — spec/BENCH.md §2.2)
 //!   --stage-threads J,E     journal / egress thread counts (default 1,1)
+//!   --placement inline|stage   where command records are encoded (default inline)
 //!
 //! Prints one RESULTS.md row to stdout; environment to stderr.
 
@@ -36,6 +38,9 @@ struct Row {
     ops: usize,
     wall_ns: u64,
     lat: Vec<u64>,
+    /// Core mode: ops/s of the same run without per-op clock reads — the
+    /// scaling gate's denominator (spec/BENCH.md §5).
+    untimed: Option<f64>,
 }
 
 fn core_mode(setup: &Corpus, run: &Corpus) -> Row {
@@ -63,10 +68,18 @@ fn core_mode(setup: &Corpus, run: &Corpus) -> Row {
         }
         let wall_ns = wall.elapsed().as_nanos() as u64;
         std::hint::black_box(sink.acc);
+        // Transparency: the protocol's per-op clock reads cost real time.
+        let (mut eng, mut sink) = (Engine::new(cfg), NullSink::new());
+        go(&setup.cmds, &mut eng, &mut sink);
+        let t = Instant::now();
+        go(&run.cmds, &mut eng, &mut sink);
+        let untimed = run.cmds.len() as f64 / t.elapsed().as_secs_f64();
+        std::hint::black_box(sink.acc);
         Row {
             ops: run.cmds.len(),
             wall_ns,
             lat,
+            untimed: Some(untimed),
         }
     } else {
         {
@@ -89,10 +102,21 @@ fn core_mode(setup: &Corpus, run: &Corpus) -> Row {
         }
         let wall_ns = wall.elapsed().as_nanos() as u64;
         std::hint::black_box(sink.acc);
+        let (mut book, mut sink) = (OrderBook::new(cfg), NullSink::new());
+        for &(_, c) in &setup.cmds {
+            book.apply(c, &mut sink);
+        }
+        let t = Instant::now();
+        for &(_, c) in &run.cmds {
+            book.apply(c, &mut sink);
+        }
+        let untimed = run.cmds.len() as f64 / t.elapsed().as_secs_f64();
+        std::hint::black_box(sink.acc);
         Row {
             ops: run.cmds.len(),
             wall_ns,
             lat,
+            untimed: Some(untimed),
         }
     }
 }
@@ -105,6 +129,7 @@ struct PipeOpts {
     batch: usize,
     rings: (usize, usize, usize),
     stage_threads: Option<(usize, usize)>,
+    placement: JournalPlacement,
 }
 
 fn build<C: MatchingCore>(book: BookConfig, o: &PipeOpts, metrics: Option<Metrics>) -> Pipeline<C> {
@@ -116,6 +141,7 @@ fn build<C: MatchingCore>(book: BookConfig, o: &PipeOpts, metrics: Option<Metric
     if let Some((j, e)) = o.stage_threads {
         b = b.stage_threads(j, e);
     }
+    b = b.journal_placement(o.placement);
     if let Some(j) = &o.journal {
         b = b.journal(j.clone());
     }
@@ -158,6 +184,7 @@ fn pipe_mode<C: MatchingCore>(setup: &Corpus, run: &Corpus, o: &PipeOpts) -> Row
             std::thread::Builder::new()
                 .name("orderbench-producer".into())
                 .spawn(move || {
+                    orderer::affinity::set_current(orderer::affinity::Role::Hot);
                     start.wait();
                     for chunk in stream.chunks(batch) {
                         h.publish_batch(chunk).unwrap();
@@ -186,6 +213,7 @@ fn pipe_mode<C: MatchingCore>(setup: &Corpus, run: &Corpus, o: &PipeOpts) -> Row
         ops: run.cmds.len(),
         wall_ns,
         lat,
+        untimed: None,
     }
 }
 
@@ -220,6 +248,7 @@ fn main() {
             "--baseline",
             "--events",
             "--stage-threads",
+            "--placement",
         ],
         &[],
     );
@@ -306,6 +335,7 @@ fn main() {
                 "--outbox",
                 "--events",
                 "--stage-threads",
+                "--placement",
             ] {
                 if let Some(v) = args.get(k) {
                     config.push(format!("{}={v}", &k[2..]));
@@ -318,10 +348,15 @@ fn main() {
                 waits,
                 batch: args.num("--batch", 64usize).max(1),
                 rings: (
-                    args.num("--ingress", 1usize << 16),
-                    args.num("--inbox", 1usize << 14),
-                    args.num("--outbox", 1usize << 15),
+                    args.num("--ingress", 1usize << 14),
+                    args.num("--inbox", 1usize << 12),
+                    args.num("--outbox", 1usize << 13),
                 ),
+                placement: match args.get("--placement").unwrap_or("inline") {
+                    "inline" => JournalPlacement::Inline,
+                    "stage" => JournalPlacement::Stage,
+                    v => die(format!("--placement: unknown {v}")),
+                },
                 stage_threads: args.get("--stage-threads").map(|v| {
                     let (j, e) = v
                         .split_once(',')
@@ -344,6 +379,9 @@ fn main() {
         m => die(format!("--mode: unknown {m}")),
     };
 
+    if let Some(u) = row.untimed {
+        config.push(format!("untimed={u:.0}"));
+    }
     let mut lat = row.lat;
     lat.sort_unstable();
     let ops_s = row.ops as f64 / (row.wall_ns as f64 / 1e9);
