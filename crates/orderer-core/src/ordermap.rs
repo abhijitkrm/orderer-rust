@@ -89,11 +89,18 @@ impl OrderMap {
         let val = self.vals[i];
         self.used[i] = 0;
         self.len -= 1;
-        // Backward-shift deletion: pull forward any entry whose probe chain
-        // crosses the cleared slot.
+        // Backward-shift deletion (Knuth 6.4, Algorithm R): scan forward from
+        // the hole; move back any entry whose probe chain crosses it.
+        //
+        // orderer fix (matcher-rust 459a22a had `hole = j` in the can't-move
+        // branch too): an entry that cannot move must leave the hole where
+        // it is — only the scan advances. Moving the hole onto a live slot
+        // let a later shift overwrite that entry, silently dropping a key
+        // (map `len` then drifts from the pool, and level totals underflow).
         let mut hole = i;
+        let mut j = i;
         loop {
-            let j = (hole + 1) & self.mask;
+            j = (j + 1) & self.mask;
             if self.used[j] == 0 {
                 return Some(val);
             }
@@ -110,8 +117,44 @@ impl OrderMap {
                 self.used[hole] = 1;
                 self.used[j] = 0;
                 hole = j;
-            } else {
-                hole = j;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Random insert/remove against a model, at high load factor so probe
+    /// chains overlap and wrap — the regime that exposed the deletion bug.
+    #[test]
+    fn matches_a_model_under_heavy_churn() {
+        let mut x: u64 = 0x1234_5678;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for live_max in [8usize, 32, 100, 512] {
+            let mut m = OrderMap::with_capacity(live_max);
+            let mut model: HashMap<u64, u32> = HashMap::new();
+            let ids = (live_max * 3) as u64;
+            for step in 0..200_000u32 {
+                let k = next() % ids;
+                if model.len() < live_max && next() % 2 == 0 {
+                    assert_eq!(m.insert(k, step), model.insert(k, step));
+                } else {
+                    assert_eq!(m.remove(k), model.remove(&k), "remove {k} at step {step}");
+                }
+                assert_eq!(m.len(), model.len());
+                if step % 997 == 0 {
+                    for (&k, &v) in &model {
+                        assert_eq!(m.get(k), Some(v), "lost key {k}");
+                    }
+                }
             }
         }
     }

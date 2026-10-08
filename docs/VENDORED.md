@@ -27,7 +27,8 @@ the pinned commit.
 
 | File | Status |
 |---|---|
-| `book.rs engine.rs index.rs level.rs ordermap.rs pool.rs sink.rs types.rs journal.rs jsonflat.rs` | verbatim |
+| `book.rs engine.rs index.rs level.rs pool.rs sink.rs types.rs journal.rs jsonflat.rs` | verbatim |
+| `ordermap.rs` | **bug fix**: backward-shift deletion moved the hole onto an entry that could not move, so a later shift could overwrite a live key. The key was silently dropped, the map drifted from the pool, and level totals underflowed. Found by orderer's dense-map allocation test. Also present in matcher-cpp's `internals.hpp`; matcher-java and matcher-ts are correct, and matcher-go uses a built-in map. Fixed here with a model-based regression test; to be fixed upstream |
 | `snapshot.rs` | verbatim, plus `write_header`, `try_parse` (errors instead of panics) and `validate_book` |
 | `core.rs` | new: the `MatchingCore` seam, `FifoCore`, `NoopCore` |
 | `lib.rs` | crate docs and exports adapted |
