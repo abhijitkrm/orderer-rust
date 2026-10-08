@@ -54,6 +54,14 @@ core:
 Core-mode numbers should match the same language's `matcher_bench` within
 ±10%, since it is the same code. Larger gaps are investigated.
 
+Core mode also replays the run **untimed**: same fresh book or engine and
+untimed setup, then the run commands back to back with one wall-clock
+measurement and no per-op clock reads. Its ops/s is reported as `untimed=`
+in the row's config column. On Apple M1 the two per-op clock reads of §2
+cost about as much as a W4 command, so timed ops/s is roughly half of
+untimed. Latency percentiles come from the timed pass; the throughput
+baseline comes from the untimed one.
+
 ### 2.2 Pipeline mode
 
 1. Parse corpora into memory **before** timing.
@@ -111,13 +119,18 @@ env: <CPU (core topology)> / <OS> / <toolchain + flags> / journal <mode> fsync <
 
 Latencies are ns. Core rows report per-op latency (matcher protocol);
 pipeline rows report end-to-end latency (§2.2 step 5). `eff` is blank for
-core rows.
+core rows, which carry `untimed=<ops/s>` in the config column.
 
 ## 5. The scaling gate
 
 ```
-eff(P) = pipe_ops_s(W6, P) / (P × core_ops_s(W6))
+eff(P) = pipe_ops_s(W6, P) / (P × core_untimed_ops_s(W6))
 ```
+
+Both sides are plain wall-clock throughput. (orderer-spec/1 divided by the
+*timed* core ops/s, which pays per-op clock reads the pipeline doesn't and
+so overstated `eff` by about 1.5×. Corrected in 1.1; the gate only got
+stricter.)
 
 The gate is `eff(P) ≥ 0.9` for every `P ∈ {1, 2, 4}` (an implementation
 may lower the top `P` to the machine's performance-core count, and must

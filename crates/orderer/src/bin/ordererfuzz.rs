@@ -1,6 +1,8 @@
 //! ordererfuzz — spec/HARNESS.md §4.2 (mirrors matcherfuzz).
 //!
-//!   ordererfuzz <cmd-file> [--partitions P] [--partition-map F] [--journal-dir D] [--binary]
+//! ```text
+//! ordererfuzz <cmd-file> [--partitions P] [--partition-map F] [--journal-dir D] [--binary]
+//! ```
 //!
 //! Like orderrun, but lines are symbol-tagged only for engine files, exactly
 //! as matcherfuzz prints them. Builds with debug assertions (`dev`, `fuzz`

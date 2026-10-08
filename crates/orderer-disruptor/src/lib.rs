@@ -27,7 +27,7 @@
 //! assert_eq!(seen, 7);
 //! ```
 //!
-//! `unsafe` lives only in [`ring`](crate::ring) — see its protocol notes.
+//! `unsafe` lives only in [`ring`] — see its protocol notes.
 
 #![deny(unsafe_code)]
 

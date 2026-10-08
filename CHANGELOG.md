@@ -1,8 +1,28 @@
 # Changelog
 
-## Unreleased
+## Unreleased: v0.1.0 candidate (implements orderer-spec/1.1)
 
-- Workspace scaffold (`orderer-core`, `orderer-disruptor`, `orderer`).
-  Vendored orderer spec + vectors (`docs/VENDORED.md`).
-- `orderer-core`: matcher-rust port at `459a22a` (golden + snapshot parity),
-  plus the `MatchingCore` seam with `FifoCore` and `NoopCore`.
+- **orderer-core**: matcher-rust 459a22a, vendored, plus the `MatchingCore`
+  seam (`FifoCore`, `NoopCore`) and non-panicking snapshot parsing. Also
+  fixes an upstream `OrderMap` backward-shift deletion bug that silently
+  dropped keys in dense maps. Found here; also present in matcher-cpp. See
+  `vectors/regress/001_dense_map_churn`.
+- **orderer-disruptor**: LMAX ring, single and multi producers (per-slot
+  availability flags, CAS `try_publish`), dependency barriers, four wait
+  strategies, `EventProcessor`, `MultiRingProcessor`, a DSL. `unsafe`
+  confined to `ring.rs`; loom-checked.
+- **orderer**: the pipeline:
+  - router with `iseq` stamping and symbol routing
+  - per-partition engines with inline (or staged) journal-before-apply
+  - JSONL and binary journals written by I/O threads with group-commit fsync
+  - durability-gated acks
+  - drain, snapshot and shutdown controls with clean cuts
+  - recovery from a snapshot and/or journals at any P
+  - egress plugs; zero steady-state allocation
+- Harnesses: `orderrun`, `ordererfuzz`, `orderrecover`, `ordersnap`,
+  `orderbench` (spec/HARNESS.md), with the `scripts/build-harness.sh` and
+  `scripts/test.sh` discovery contract.
+- Feature `affinity`: macOS QoS hints for hot threads.
+- Benchmarked on an Apple M1: the scaling gate is not met on that machine
+  (durable-flush bandwidth, 4 performance cores). The spec repo's
+  docs/RESULTS.md has the numbers.

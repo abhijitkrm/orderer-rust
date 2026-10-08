@@ -1,6 +1,8 @@
 //! ordersnap — spec/HARNESS.md §4.4 (mirrors matchersnap).
 //!
-//!   ordersnap <cmd-file> [--partitions P] [--partition-map F] [--journal-dir D] [--binary]
+//! ```text
+//! ordersnap <cmd-file> [--partitions P] [--partition-map F] [--journal-dir D] [--binary]
+//! ```
 //!
 //! Runs the file, drains, prints the merged `matcher-snap/1` snapshot —
 //! byte-identical to matchersnap's for any P.

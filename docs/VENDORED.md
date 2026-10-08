@@ -12,9 +12,9 @@ re-vendored.
 
 - **upstream**: `orderer`
 - **repo**: `https://github.com/abhijitkrm/orderer`
-- **commit**: `c541cd0f265df0e2d939febb2c0b7694d4172230`
+- **commit**: `41019c69abadfcbee131bc17debd5154aea9608e`
 - **paths**: `spec=spec vectors=vectors`
-- **tag**: `orderer-spec/1` (the frozen v1 contract)
+- **tag**: `orderer-spec/1.1` (v1 contract + BENCH.md untimed-baseline clarification)
 
 `docs/VENDORED.sha256` holds every file's checksum. `scripts/vendored.sh`
 verifies the copy against it and, when `../orderer` is checked out, against

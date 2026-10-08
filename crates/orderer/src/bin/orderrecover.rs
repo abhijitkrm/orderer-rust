@@ -1,7 +1,9 @@
 //! orderrecover — spec/HARNESS.md §4.3 (mirrors matcherrecover).
 //!
-//!   orderrecover <snapshot> <tail-file> [--partitions P] [--partition-map F]
-//!   orderrecover --journal-dir DIR [--snap PATH] [--binary] [--partitions P] [--partition-map F]
+//! ```text
+//! orderrecover <snapshot> <tail-file> [--partitions P] [--partition-map F]
+//! orderrecover --journal-dir DIR [--snap PATH] [--binary] [--partitions P] [--partition-map F]
+//! ```
 //!
 //! Tail form: restore the snapshot, submit every tail line that has no
 //! "format" key through a pipeline, print the replayed events (tagged,

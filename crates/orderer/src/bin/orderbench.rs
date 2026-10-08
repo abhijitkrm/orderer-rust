@@ -1,19 +1,23 @@
 //! orderbench — spec/BENCH.md benchmark protocol.
 //!
-//!   orderbench <prefix> --mode core [--tag NAME]
-//!   orderbench <prefix> --mode pipe --partitions P [--producers N]
-//!              [--journal binary|jsonl|off] [--journal-dir DIR] [--fsync N] [--tag NAME]
+//! ```text
+//! orderbench <prefix> --mode core [--tag NAME]
+//! orderbench <prefix> --mode pipe --partitions P [--producers N]
+//!            [--journal binary|jsonl|off] [--journal-dir DIR] [--fsync N] [--tag NAME]
+//! ```
 //!
 //! orderer-rust tuning flags (listed in the row's config column when set):
-//!   --core fifo|noop        matching core (noop: the pipeline alone)
-//!   --waits relaxed|low     wait strategies (low: router + engines busy-spin)
-//!   --batch N               producer claim batch (default 64)
-//!   --ingress N --inbox N --outbox N   ring sizes
-//!   --baseline OPS          core *untimed* ops/s for the eff column (the core
-//!                           row reports it as `untimed=` in its config column)
-//!   --events on|off         also write event journals (default off — spec/BENCH.md §2.2)
-//!   --stage-threads J,E     journal / egress thread counts (default 1,1)
-//!   --placement inline|stage   where command records are encoded (default inline)
+//! ```text
+//! --core fifo|noop        matching core (noop: the pipeline alone)
+//! --waits relaxed|low     wait strategies (low: router + engines busy-spin)
+//! --batch N               producer claim batch (default 64)
+//! --ingress N --inbox N --outbox N   ring sizes
+//! --baseline OPS          core *untimed* ops/s for the eff column (the core
+//!                         row reports it as `untimed=` in its config column)
+//! --events on|off         also write event journals (default off — spec/BENCH.md §2.2)
+//! --stage-threads J,E     journal / egress thread counts (default 1,1)
+//! --placement inline|stage   where command records are encoded (default inline)
+//! ```
 //!
 //! Prints one RESULTS.md row to stdout; environment to stderr.
 

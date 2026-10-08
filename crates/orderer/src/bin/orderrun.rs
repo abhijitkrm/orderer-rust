@@ -1,6 +1,8 @@
 //! orderrun — spec/HARNESS.md §4.1 (mirrors matcherrun).
 //!
-//!   orderrun <cmd-file> [--partitions P] [--partition-map F] [--journal-dir D] [--binary] [--snap PATH]
+//! ```text
+//! orderrun <cmd-file> [--partitions P] [--partition-map F] [--journal-dir D] [--binary] [--snap PATH]
+//! ```
 //!
 //! Runs the file through a pipeline (one producer, file order), drains, and
 //! prints every event as a symbol-tagged canonical line, grouped by
