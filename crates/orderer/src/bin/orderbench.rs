@@ -28,7 +28,7 @@ use orderer::harness::{die, load_corpus, Args, Corpus};
 use orderer::*;
 use orderer_core::*;
 
-const USAGE: &str = "orderbench <prefix> --mode core|pipe [--partitions P] [--producers N] [--journal binary|jsonl|off] [--journal-dir DIR] [--fsync N] [--tag NAME] [--core fifo|noop] [--waits relaxed|low] [--batch N] [--ingress N] [--inbox N] [--outbox N] [--baseline OPS]";
+const USAGE: &str = "orderbench <prefix> --mode core|pipe [--partitions P] [--producers N] [--journal binary|jsonl|off] [--journal-dir DIR] [--fsync N] [--tag NAME] [--core fifo|noop] [--waits relaxed|low] [--batch N] [--ingress N] [--inbox N] [--outbox N] [--baseline OPS] [--stats]";
 
 fn percentile(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
@@ -134,6 +134,7 @@ struct PipeOpts {
     rings: (usize, usize, usize),
     stage_threads: Option<(usize, usize)>,
     placement: JournalPlacement,
+    stats: bool,
 }
 
 fn build<C: MatchingCore>(book: BookConfig, o: &PipeOpts, metrics: Option<Metrics>) -> Pipeline<C> {
@@ -205,6 +206,27 @@ fn pipe_mode<C: MatchingCore>(setup: &Corpus, run: &Corpus, o: &PipeOpts) -> Row
     p.drain().unwrap();
     let wall_ns = wall.elapsed().as_nanos() as u64;
     p.set_timestamps(false);
+    if o.stats {
+        // fsync behaviour of the measured pipeline (spec/BENCH.md doesn't
+        // gate on it; it explains durable rows)
+        let st = p.stats();
+        let (n, tot, max) = st.partitions.iter().fold((0, 0, 0), |a, s| {
+            (
+                a.0 + s.fsyncs,
+                a.1 + s.fsync_ns_total,
+                a.2.max(s.fsync_ns_max),
+            )
+        });
+        eprintln!(
+            "stats: fsyncs={n} fsync_mean_us={:.1} fsync_max_us={:.1}",
+            if n > 0 {
+                tot as f64 / n as f64 / 1e3
+            } else {
+                0.0
+            },
+            max as f64 / 1e3
+        );
+    }
     p.shutdown().unwrap();
 
     let mut lat: Vec<u64> = results
@@ -254,7 +276,7 @@ fn main() {
             "--stage-threads",
             "--placement",
         ],
-        &[],
+        &["--stats"],
     );
     let prefix = args
         .positional
@@ -370,6 +392,7 @@ fn main() {
                         e.parse().unwrap_or_else(|_| die("--stage-threads J,E")),
                     )
                 }),
+                stats: args.flag("--stats"),
             };
             let row = match args.get("--core").unwrap_or("fifo") {
                 "fifo" => pipe_mode::<FifoCore>(&setup, &run, &o),

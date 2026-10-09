@@ -583,3 +583,59 @@ fn automatic_checkpoints_keep_the_directory_recoverable() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn stats_count_commands_events_and_fsyncs() {
+    let cfg = fuzz_cfg();
+    let cmds = fuzz_corpus(16, 5_000, 6);
+    let dir = scratch("stats");
+    let mut jc = journal_cfg(&dir, JournalFormat::Binary);
+    jc.fsync = journal::FsyncPolicy::every_n(64);
+    let mut p = Pipeline::<FifoCore>::builder()
+        .book_config(cfg)
+        .partitions(3)
+        .journal(jc)
+        .build()
+        .unwrap();
+    p.publish_batch(&cmds).unwrap();
+    p.drain().unwrap();
+    // durability catches up with the drained stream
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while p
+        .stats()
+        .partitions
+        .iter()
+        .any(|s| s.durable_iseq < s.flushed_iseq)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let st = p.stats();
+    assert_eq!(st.ingress_depth, 0);
+    assert_eq!(st.partitions.len(), 3);
+    assert!(st
+        .partitions
+        .iter()
+        .all(|s| s.inbox_depth == 0 && s.outbox_depth == 0));
+    assert_eq!(
+        st.partitions.iter().map(|s| s.commands).sum::<u64>(),
+        cmds.len() as u64
+    );
+    assert_eq!(
+        st.partitions.iter().map(|s| s.events).sum::<u64>(),
+        reference_lines(cfg, &cmds).len() as u64
+    );
+    assert!(st
+        .partitions
+        .iter()
+        .all(|s| s.fsyncs > 0 && s.fsync_ns_max > 0));
+    assert_eq!(
+        st.partitions.iter().map(|s| s.durable_iseq).max(),
+        Some(cmds.len() as u64)
+    );
+    let prom = st.to_prometheus();
+    assert!(prom.contains("# TYPE orderer_commands_total counter"));
+    assert!(prom.contains("orderer_inbox_depth{partition=\"2\"} 0"));
+    p.shutdown().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

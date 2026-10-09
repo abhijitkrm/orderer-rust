@@ -312,6 +312,16 @@ struct Shared {
     durable: Box<[Arc<AtomicU64>]>,
     alerts: Mutex<Vec<Box<dyn Fn() + Send + Sync>>>,
     journal: Option<JournalConfig>,
+    counters: Box<[Arc<crate::stats::EngineCounters>]>,
+    io: Box<[Arc<crate::stats::IoStats>]>,
+    rings: Mutex<Option<Rings>>,
+}
+
+/// Ring handles kept for statistics (depth = published - consumed).
+struct Rings {
+    ingress: orderer_disruptor::RingControl<CmdMsg>,
+    inboxes: Vec<orderer_disruptor::RingControl<CmdMsg>>,
+    outboxes: Vec<orderer_disruptor::RingControl<EvtMsg>>,
 }
 
 impl Shared {
@@ -585,6 +595,9 @@ impl<C: MatchingCore> Pipeline<C> {
                 .collect(),
             alerts: Mutex::new(Vec::new()),
             journal: b.journal.clone(),
+            counters: (0..p_count).map(|_| Arc::default()).collect(),
+            io: (0..p_count).map(|_| Arc::default()).collect(),
+            rings: Mutex::new(None),
         });
 
         // Journals are opened (and their I/O threads started) before any
@@ -602,6 +615,7 @@ impl<C: MatchingCore> Pipeline<C> {
                 let marks = Marks {
                     flushed: shared.flushed[p as usize].clone(),
                     durable: shared.durable[p as usize].clone(),
+                    io: shared.io[p as usize].clone(),
                 };
                 cmd_writers.push(Some(
                     ChunkWriter::start(f, format!("orderer-io-cmd-{p}"), Some(cfg.fsync), marks)
@@ -612,6 +626,7 @@ impl<C: MatchingCore> Pipeline<C> {
                     let marks = Marks {
                         flushed: Arc::new(AtomicU64::new(0)),
                         durable: Arc::new(AtomicU64::new(0)),
+                        io: Arc::default(), // event journals never fsync
                     };
                     Some(
                         ChunkWriter::start(f, format!("orderer-io-evt-{p}"), None, marks)
@@ -633,6 +648,7 @@ impl<C: MatchingCore> Pipeline<C> {
         let mut egress_groups: Vec<Vec<EgressPart>> = (0..n_egress).map(|_| Vec::new()).collect();
         let factories = b.egress;
 
+        let (mut inbox_ctls, mut outbox_ctls) = (Vec::new(), Vec::new());
         for (p, core) in (0..p_count).zip(cores) {
             let mut ib = RingBuilder::<CmdMsg>::new(b.inbox);
             let staged = journaled && b.placement == JournalPlacement::Stage;
@@ -641,6 +657,7 @@ impl<C: MatchingCore> Pipeline<C> {
             let eid = ib.consumer_with(&deps, b.waits.engine);
             let (inbox, inbox_cons) = ib.build_single();
             let ctl = inbox.control();
+            inbox_ctls.push(ctl.clone());
             alerts.push(Box::new(move || ctl.alert()));
             inbox_producers.push(inbox);
             let mut inbox_cons: Vec<Option<Consumer<CmdMsg>>> =
@@ -650,6 +667,7 @@ impl<C: MatchingCore> Pipeline<C> {
             ob.consumer_with(&[], b.waits.egress);
             let (outbox, mut outbox_cons) = ob.build_single();
             let ctl = outbox.control();
+            outbox_ctls.push(ctl.clone());
             alerts.push(Box::new(move || ctl.alert()));
 
             if let Some(jid) = jid {
@@ -693,8 +711,9 @@ impl<C: MatchingCore> Pipeline<C> {
                 } else {
                     None
                 };
+                let counters = shared.counters[p as usize].clone();
                 threads.push(spawn("engine", p, move || {
-                    engine_thread(sh, cons, outbox, core, check, inline)
+                    engine_thread(sh, cons, outbox, core, check, inline, counters)
                 }));
             }
             let ctx = EgressCtx {
@@ -749,6 +768,11 @@ impl<C: MatchingCore> Pipeline<C> {
         rb.consumer_with(&[], b.waits.router);
         let (ingress, mut router_cons) = rb.build_multi();
         let ctl = ingress.control();
+        *shared.rings.lock().unwrap() = Some(Rings {
+            ingress: ctl.clone(),
+            inboxes: inbox_ctls,
+            outboxes: outbox_ctls,
+        });
         alerts.push(Box::new(move || ctl.alert()));
         {
             let cons = router_cons.pop().unwrap();
@@ -861,6 +885,36 @@ impl<C> Pipeline<C> {
     /// [`PipelineBuilder::checkpoint_every`].
     pub fn checkpoint(&self) -> Result<Snapshot, Error> {
         self.ops().checkpoint()
+    }
+
+    /// Operational statistics (see [`crate::stats`]).
+    pub fn stats(&self) -> crate::stats::PipelineStats {
+        let rings = self.shared.rings.lock().unwrap();
+        let depth = |published: i64, consumed: i64| (published - consumed).max(0) as u64;
+        let mut st = crate::stats::PipelineStats::default();
+        if let Some(r) = rings.as_ref() {
+            st.ingress_depth = depth(r.ingress.published(), r.ingress.consumed());
+            for p in 0..self.shared.partitions as usize {
+                let (c, io) = (&self.shared.counters[p], &self.shared.io[p]);
+                st.partitions.push(crate::stats::PartitionStats {
+                    partition: p as u32,
+                    inbox_depth: depth(r.inboxes[p].published(), r.inboxes[p].consumed()),
+                    outbox_depth: depth(r.outboxes[p].published(), r.outboxes[p].consumed()),
+                    commands: c.commands.load(Ordering::Relaxed),
+                    events: c.events.load(Ordering::Relaxed),
+                    flushed_iseq: if self.shared.journal.is_some() {
+                        self.shared.flushed[p].load(Ordering::Acquire)
+                    } else {
+                        u64::MAX
+                    },
+                    durable_iseq: self.shared.durable[p].load(Ordering::Acquire),
+                    fsyncs: io.fsyncs.load(Ordering::Relaxed),
+                    fsync_ns_total: io.fsync_ns_total.load(Ordering::Relaxed),
+                    fsync_ns_max: io.fsync_ns_max.load(Ordering::Relaxed),
+                });
+            }
+        }
+        st
     }
 
     fn ops(&self) -> Ops<'_> {
@@ -1215,8 +1269,10 @@ fn engine_thread<C: MatchingCore>(
     mut core: C,
     check_invariants: bool,
     mut journal: Option<InlineJournal>,
+    counters: Arc<crate::stats::EngineCounters>,
 ) {
     let _g = FailOnPanic(shared.clone(), "engine");
+    let (mut commands, mut events) = (0u64, 0u64);
     crate::affinity::set_current(crate::affinity::Role::Hot);
     if journal.is_some() {
         crate::writer::prewarm_thread();
@@ -1234,7 +1290,9 @@ fn engine_thread<C: MatchingCore>(
                         j.w.record(m.iseq);
                     }
                     let (iseq, t_pub) = (m.iseq, m.t_pub);
+                    commands += 1;
                     core.apply(m.symbol, cmd, &mut |sym, seq, ev| {
+                        events += 1;
                         let _ = out.stage(|e| {
                             e.iseq = iseq;
                             e.seq = seq;
@@ -1296,6 +1354,10 @@ fn engine_thread<C: MatchingCore>(
                 out.commit();
             }
         });
+        if n > 0 {
+            counters.commands.store(commands, Ordering::Relaxed);
+            counters.events.store(events, Ordering::Relaxed);
+        }
         if stop || inbox.is_alerted() {
             break;
         }

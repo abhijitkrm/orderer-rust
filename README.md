@@ -58,6 +58,7 @@ The full version is `cargo run -p orderer --example quickstart`.
 | Journals | `JournalConfig`, `FsyncPolicy`, `JournalPlacement` | JSONL or binary; inline (default) or a staged LMAX diamond |
 | Waiting | `Waits` / `WaitStrategy` | BusySpin, Yield, Backoff, Blocking, per stage |
 | Recovery | `orderer::recover` | snapshot + journals → cores at any P; `journal::repair_dir` for torn tails |
+| Observability | `Pipeline::stats`, `PipelineStats::to_prometheus` | ring depths, counters, watermarks, fsync timings |
 | Checkpoints | `Pipeline::checkpoint` | durable snapshot + journal segment rotation; old segments removed |
 
 ## Crates

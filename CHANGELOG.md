@@ -10,6 +10,9 @@
   segment at a clean cut, writes the snapshot durably, and removes covered
   segments and older checkpoints. Recovery reads all segments and, by
   default, the newest checkpoint.
+- `Pipeline::stats()` (module `stats`): ring depths, per-partition command
+  and event counts, flushed/durable watermarks, fsync count/total/max;
+  `PipelineStats::to_prometheus()`. `orderbench --stats` prints fsync timing.
 - `PipelineBuilder::checkpoint_every(interval)`: automatic checkpoints from
   a background thread (stopped first at shutdown).
 - Harness: `orderrun --checkpoint-every K` and `--durable`; `scripts/test.sh`

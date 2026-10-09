@@ -39,6 +39,7 @@ enum Msg {
 pub(crate) struct Marks {
     pub flushed: Arc<AtomicU64>,
     pub durable: Arc<AtomicU64>,
+    pub io: Arc<crate::stats::IoStats>,
 }
 
 /// Call once on any thread that will own a [`ChunkWriter`]: std allocates
@@ -178,7 +179,9 @@ fn io_thread(
         _ => Duration::from_secs(3600),
     };
     let sync = |file: &File, written: u64| -> io::Result<()> {
+        let t = Instant::now();
         file.sync_data()?;
+        marks.io.record(t.elapsed().as_nanos() as u64);
         marks.durable.store(written, Ordering::Release);
         Ok(())
     };

@@ -38,6 +38,7 @@ pub mod msg;
 mod pipeline;
 pub mod recover;
 pub mod routing;
+pub mod stats;
 mod writer;
 
 pub use egress::{
