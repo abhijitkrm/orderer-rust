@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/orderer-core", "crates/orderer-disruptor", "crates/orderer"]
+# CI checks sibling repos out under upstream/; they are their own workspaces
+exclude = ["upstream"]
 
 [workspace.package]
 version = "0.1.0"
