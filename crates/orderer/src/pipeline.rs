@@ -152,6 +152,7 @@ pub struct PipelineBuilder<C> {
     journal_threads: Option<usize>,
     egress_threads: Option<usize>,
     placement: JournalPlacement,
+    checkpoint_every: Option<Duration>,
 }
 
 impl<C: MatchingCore> Default for PipelineBuilder<C> {
@@ -174,6 +175,7 @@ impl<C: MatchingCore> Default for PipelineBuilder<C> {
             journal_threads: None,
             egress_threads: None,
             placement: JournalPlacement::Inline,
+            checkpoint_every: None,
         }
     }
 }
@@ -218,6 +220,15 @@ impl<C: MatchingCore> PipelineBuilder<C> {
     /// Per-partition command (and optionally event) journals.
     pub fn journal(mut self, cfg: JournalConfig) -> Self {
         self.journal = Some(cfg);
+        self
+    }
+
+    /// Take a checkpoint (spec/JOURNAL.md §6) every `interval` from a
+    /// background thread, bounding recovery time and journal size. Needs
+    /// journals. Shutdown stops the thread first; a failed checkpoint fails
+    /// the pipeline.
+    pub fn checkpoint_every(mut self, interval: Duration) -> Self {
+        self.checkpoint_every = Some(interval);
         self
     }
 
@@ -511,6 +522,7 @@ pub struct Pipeline<C> {
     shared: Arc<Shared>,
     map: PartitionMap,
     threads: Vec<(&'static str, JoinHandle<()>)>,
+    checkpointer: Option<(Arc<StopSignal>, JoinHandle<()>)>,
     shut: bool,
     _core: PhantomData<fn() -> C>,
 }
@@ -748,12 +760,26 @@ impl<C: MatchingCore> Pipeline<C> {
         }
         *shared.alerts.lock().unwrap() = alerts;
 
+        let checkpointer = match (b.checkpoint_every, &b.journal) {
+            (Some(_), None) => return Err(Error::Config("checkpoint_every needs journals".into())),
+            (Some(interval), Some(_)) => {
+                let stop: Arc<StopSignal> = Arc::new((Mutex::new(false), Condvar::new()));
+                let (st, sh, ing) = (stop.clone(), shared.clone(), ingress.clone());
+                let t = std::thread::Builder::new()
+                    .name("orderer-checkpoint".into())
+                    .spawn(move || checkpoint_thread(&ing, &sh, &st, interval))
+                    .map_err(|e| Error::Io(e.to_string()))?;
+                Some((stop, t))
+            }
+            (None, _) => None,
+        };
         let handle = Handle::register(ingress, shared.clone());
         Ok(Pipeline {
             handle,
             shared,
             map,
             threads,
+            checkpointer,
             shut: false,
             _core: PhantomData,
         })
@@ -814,13 +840,91 @@ impl<C> Pipeline<C> {
         self.shared.durable[p as usize].load(Ordering::Acquire)
     }
 
+    /// Barrier: returns once every command published before the call has
+    /// been applied and its events delivered to every egress plug
+    /// (spec/PIPELINE.md §6).
+    pub fn drain(&self) -> Result<(), Error> {
+        self.ops().drain()
+    }
+
+    /// A consistent snapshot of every book, cut at this point of the ingress
+    /// order (spec/PIPELINE.md §6, spec/JOURNAL.md §4).
+    pub fn snapshot(&self) -> Result<Snapshot, Error> {
+        self.ops().snapshot_op(|op_id| Control::Snapshot { op_id })
+    }
+
+    /// A checkpoint (spec/JOURNAL.md §6): a snapshot cut at this point of
+    /// the ingress order; every journal rotates onto a new segment at the
+    /// cut; the snapshot is written durably into the journal directory as
+    /// `checkpoint-{cut}.snap`; then older segments and checkpoints are
+    /// removed. Needs journals. See also
+    /// [`PipelineBuilder::checkpoint_every`].
+    pub fn checkpoint(&self) -> Result<Snapshot, Error> {
+        self.ops().checkpoint()
+    }
+
+    fn ops(&self) -> Ops<'_> {
+        Ops {
+            ingress: &self.handle.ingress,
+            shared: &self.shared,
+        }
+    }
+
+    /// Stop accepting commands, drain everything already sequenced, stop
+    /// every thread. Idempotent.
+    pub fn shutdown(&mut self) -> Result<(), Error> {
+        if self.shut {
+            return self.shared.check();
+        }
+        self.shut = true;
+        // stop the checkpoint thread first: a checkpoint in progress finishes
+        if let Some((stop, t)) = self.checkpointer.take() {
+            *stop.0.lock().unwrap() = true;
+            stop.1.notify_all();
+            let _ = t.join();
+        }
+        self.shared.closed.store(true, Ordering::SeqCst);
+        // wait out publishes that saw the pipeline open
+        let flags: Vec<_> = self.shared.handles.lock().unwrap().clone();
+        let _ = wait_until(&self.shared, || {
+            flags.iter().all(|f| !f.0.load(Ordering::SeqCst))
+        });
+        if self.shared.check().is_ok() {
+            let r = self.handle.ingress.publish(|m| {
+                m.symbol = 0;
+                m.t_pub = 0;
+                m.body = Body::Ctl(Control::Shutdown);
+            });
+            if r.is_err() {
+                self.shared.fail("ingress alerted before shutdown".into());
+            }
+        }
+        for (name, t) in self.threads.drain(..) {
+            if t.join().is_err() {
+                self.shared.fail(format!("{name} thread panicked"));
+            }
+        }
+        for a in self.shared.alerts.lock().unwrap().iter() {
+            a();
+        }
+        self.shared.check()
+    }
+}
+
+/// The control operations, shared by [`Pipeline`] and the checkpoint
+/// thread ([`PipelineBuilder::checkpoint_every`]).
+struct Ops<'a> {
+    ingress: &'a MultiProducer<CmdMsg>,
+    shared: &'a Shared,
+}
+
+impl Ops<'_> {
     fn publish_ctl(&self, ctl: Control) -> Result<(), Error> {
         self.shared.check()?;
         if self.shared.closed.load(Ordering::SeqCst) {
             return Err(Error::Closed);
         }
-        self.handle
-            .ingress
+        self.ingress
             .publish(|m| {
                 m.symbol = 0;
                 m.t_pub = 0;
@@ -830,24 +934,15 @@ impl<C> Pipeline<C> {
             .map_err(|_| Error::Closed)
     }
 
-    /// Barrier: returns once every command published before the call has
-    /// been applied and its events delivered to every egress plug
-    /// (spec/PIPELINE.md §6).
-    pub fn drain(&self) -> Result<(), Error> {
+    fn drain(&self) -> Result<(), Error> {
         let epoch = self.shared.next_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         self.publish_ctl(Control::Barrier { epoch })?;
-        wait_until(&self.shared, || {
+        wait_until(self.shared, || {
             self.shared
                 .egress_epoch
                 .iter()
                 .all(|e| e.0.load(Ordering::Acquire) >= epoch)
         })
-    }
-
-    /// A consistent snapshot of every book, cut at this point of the ingress
-    /// order (spec/PIPELINE.md §6, spec/JOURNAL.md §4).
-    pub fn snapshot(&self) -> Result<Snapshot, Error> {
-        self.snapshot_op(|op_id| Control::Snapshot { op_id })
     }
 
     fn snapshot_op(&self, ctl: impl Fn(u64) -> Control) -> Result<Snapshot, Error> {
@@ -889,12 +984,7 @@ impl<C> Pipeline<C> {
         })
     }
 
-    /// A checkpoint (spec/JOURNAL.md §6): a snapshot cut at this point of
-    /// the ingress order; every journal rotates onto a new segment at the
-    /// cut; the snapshot is written durably into the journal directory as
-    /// `checkpoint-{cut}.snap`; then older segments and checkpoints are
-    /// removed. Needs journals.
-    pub fn checkpoint(&self) -> Result<Snapshot, Error> {
+    fn checkpoint(&self) -> Result<Snapshot, Error> {
         let Some(cfg) = self.shared.journal.clone() else {
             return Err(Error::Config("checkpoint needs journals".into()));
         };
@@ -910,40 +1000,6 @@ impl<C> Pipeline<C> {
         remove_checkpoints_below(&cfg.dir, snap.iseq).map_err(io)?;
         Ok(snap)
     }
-
-    /// Stop accepting commands, drain everything already sequenced, stop
-    /// every thread. Idempotent.
-    pub fn shutdown(&mut self) -> Result<(), Error> {
-        if self.shut {
-            return self.shared.check();
-        }
-        self.shut = true;
-        self.shared.closed.store(true, Ordering::SeqCst);
-        // wait out publishes that saw the pipeline open
-        let flags: Vec<_> = self.shared.handles.lock().unwrap().clone();
-        let _ = wait_until(&self.shared, || {
-            flags.iter().all(|f| !f.0.load(Ordering::SeqCst))
-        });
-        if self.shared.check().is_ok() {
-            let r = self.handle.ingress.publish(|m| {
-                m.symbol = 0;
-                m.t_pub = 0;
-                m.body = Body::Ctl(Control::Shutdown);
-            });
-            if r.is_err() {
-                self.shared.fail("ingress alerted before shutdown".into());
-            }
-        }
-        for (name, t) in self.threads.drain(..) {
-            if t.join().is_err() {
-                self.shared.fail(format!("{name} thread panicked"));
-            }
-        }
-        for a in self.shared.alerts.lock().unwrap().iter() {
-            a();
-        }
-        self.shared.check()
-    }
 }
 
 impl<C> Drop for Pipeline<C> {
@@ -955,6 +1011,34 @@ impl<C> Drop for Pipeline<C> {
 }
 
 // ---- threads --------------------------------------------------------------------
+
+/// A stop flag a sleeping thread can be woken by.
+type StopSignal = (Mutex<bool>, Condvar);
+
+/// [`PipelineBuilder::checkpoint_every`]: checkpoint each `interval` until stopped.
+fn checkpoint_thread(
+    ingress: &MultiProducer<CmdMsg>,
+    shared: &Shared,
+    stop: &StopSignal,
+    interval: Duration,
+) {
+    let ops = Ops { ingress, shared };
+    let mut g = stop.0.lock().unwrap();
+    loop {
+        g = stop.1.wait_timeout(g, interval).unwrap().0;
+        if *g || shared.failed.load(Ordering::Acquire) {
+            return;
+        }
+        drop(g);
+        if let Err(e) = ops.checkpoint() {
+            if !matches!(e, Error::Closed | Error::Failed(_)) {
+                shared.fail(format!("checkpoint: {e}"));
+            }
+            return;
+        }
+        g = stop.0.lock().unwrap();
+    }
+}
 
 fn router_thread(
     shared: Arc<Shared>,

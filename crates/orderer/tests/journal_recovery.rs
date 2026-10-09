@@ -532,3 +532,54 @@ fn append_continues_the_last_segment_after_a_checkpoint() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn automatic_checkpoints_keep_the_directory_recoverable() {
+    let cfg = fuzz_cfg();
+    let cmds = fuzz_corpus(15, 20_000, 8);
+    let dir = scratch("ckpt-auto");
+    let mut p = Pipeline::<FifoCore>::builder()
+        .book_config(cfg)
+        .partitions(3)
+        .journal(journal_cfg(&dir, JournalFormat::Binary))
+        .checkpoint_every(std::time::Duration::from_millis(20))
+        .build()
+        .unwrap();
+    for chunk in cmds.chunks(500) {
+        p.publish_batch(chunk).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(3));
+    }
+    let last = p.snapshot().unwrap();
+    p.shutdown().unwrap();
+    let cps = journal::list_checkpoints(&dir);
+    assert_eq!(cps.len(), 1, "older checkpoints are removed: {cps:?}");
+    assert!(cps[0].0 > 0, "at least one automatic checkpoint ran");
+    // the directory alone (newest checkpoint + its segments) recovers the final state
+    let snap = read_snapshot(&cps[0].1).unwrap();
+    let map = PartitionMap::hash(3).unwrap();
+    let rec = recover::<FifoCore>(
+        cfg,
+        &map,
+        Some(&snap),
+        Some((&dir, JournalFormat::Binary)),
+        |_, _, _, _| {},
+    )
+    .unwrap();
+    assert_eq!(rec.last_iseq, cmds.len() as u64);
+    let mut p2 = Pipeline::<FifoCore>::builder()
+        .book_config(rec.book)
+        .partition_map(map)
+        .initial(rec.into_initial())
+        .build()
+        .unwrap();
+    assert_eq!(p2.snapshot().unwrap().body, last.body);
+    p2.shutdown().unwrap();
+    assert!(
+        Pipeline::<FifoCore>::builder()
+            .checkpoint_every(std::time::Duration::from_millis(5))
+            .build()
+            .is_err(),
+        "needs journals"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

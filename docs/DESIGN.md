@@ -120,7 +120,10 @@ writes `checkpoint-{cut}.snap` and its sidecar with `write_durably`
 (temporary file, fsync, rename, directory fsync), then removes older
 segments and checkpoints. A fresh (non-append) pipeline clears its
 directory's segments and checkpoints first; an appending one continues
-each partition's last segment.
+each partition's last segment. `PipelineBuilder::checkpoint_every`
+runs checkpoints from a background thread (`Ops` holds the control
+operations both it and `Pipeline` use); shutdown stops and joins it before
+closing, so a checkpoint in progress always completes.
 
 **Crash test.** The spec repo's `scripts/crash.sh` SIGKILLs
 `orderrun --durable` runs and checks that every acked command survived and

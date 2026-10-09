@@ -10,6 +10,8 @@
   segment at a clean cut, writes the snapshot durably, and removes covered
   segments and older checkpoints. Recovery reads all segments and, by
   default, the newest checkpoint.
+- `PipelineBuilder::checkpoint_every(interval)`: automatic checkpoints from
+  a background thread (stopped first at shutdown).
 - Harness: `orderrun --checkpoint-every K` and `--durable`; `scripts/test.sh`
   runs the vendored `spec/conformance.sh`.
 - Workspace excludes `upstream/`, so CI's sibling checkouts build.
