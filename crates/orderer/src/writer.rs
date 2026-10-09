@@ -28,6 +28,9 @@ const CHUNKS: usize = 64;
 enum Msg {
     /// Bytes, the last record id they contain, and how many records.
     Data(Vec<u8>, u64, u64),
+    /// Finish the current file (written, and synced per policy) and continue
+    /// in this one: a new segment (spec/JOURNAL.md §6 step 2).
+    Rotate(File),
     Stop,
 }
 
@@ -131,6 +134,14 @@ impl ChunkWriter {
         let _ = self.tx.send(Msg::Data(full, self.last, records));
     }
 
+    /// Continue in `next` (a new segment, header written): everything
+    /// encoded so far goes to the current file, which is synced per policy
+    /// and closed by the I/O thread.
+    pub(crate) fn rotate(&mut self, next: File) {
+        self.hand_off();
+        let _ = self.tx.send(Msg::Rotate(next));
+    }
+
     /// Hand off what's left, wait for the I/O thread to write (and, per its
     /// policy, sync) everything, and report any I/O error.
     pub(crate) fn finish(&mut self) -> io::Result<()> {
@@ -171,6 +182,18 @@ fn io_thread(
         marks.durable.store(written, Ordering::Release);
         Ok(())
     };
+    // Close the current segment: everything in it is written already; sync
+    // it if anything is unsynced (and the policy syncs at all).
+    let rotate =
+        |file: &mut File, next: File, unsynced: &mut u64, written: u64| -> io::Result<()> {
+            if *unsynced > 0 && !matches!(fsync, None | Some(FsyncPolicy::Never)) {
+                sync(file, written)?;
+            }
+            *unsynced = 0;
+            file.flush()?;
+            *file = next;
+            Ok(())
+        };
     loop {
         let msg = if unsynced > 0 {
             match rx.recv_timeout(idle) {
@@ -196,6 +219,10 @@ fn io_thread(
                     let _ = pool.send(buf);
                     match rx.try_recv() {
                         Ok(Msg::Data(b, l, r)) => next = Some((b, l, r)),
+                        Ok(Msg::Rotate(f)) => {
+                            rotate(&mut file, f, &mut unsynced, written)?;
+                            last_sync = Instant::now();
+                        }
                         Ok(Msg::Stop) => stop = true,
                         Err(_) => {}
                     }
@@ -223,6 +250,10 @@ fn io_thread(
                 // idle with unsynced records: group commit now
                 sync(&file, written)?;
                 unsynced = 0;
+                last_sync = Instant::now();
+            }
+            Some(Msg::Rotate(f)) => {
+                rotate(&mut file, f, &mut unsynced, written)?;
                 last_sync = Instant::now();
             }
             Some(Msg::Stop) => {

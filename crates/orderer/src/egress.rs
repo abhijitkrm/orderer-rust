@@ -51,6 +51,9 @@ pub trait Egress: Send {
     fn on_idle(&mut self) {}
     /// Once, when the pipeline shuts down (after every event).
     fn on_shutdown(&mut self) {}
+    /// A checkpoint with cut `cut` passed this partition (after every event
+    /// of commands up to `cut`). The event journal starts a new segment here.
+    fn on_checkpoint(&mut self, _cut: u64) {}
 }
 
 /// Creates one [`Egress`] per partition.

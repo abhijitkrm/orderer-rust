@@ -16,6 +16,9 @@ pub enum Control {
     /// Capture books; the payload lives in the `ControlTable`, keyed by
     /// `op_id`, so slots stay small and `Copy`.
     Snapshot { op_id: u64 },
+    /// A snapshot that also rotates every journal onto a new segment at
+    /// this cut (spec/JOURNAL.md §6).
+    Checkpoint { op_id: u64 },
     /// Drain, then stop every thread.
     Shutdown,
 }

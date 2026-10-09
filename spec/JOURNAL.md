@@ -1,4 +1,4 @@
-# JOURNAL — orderer journals, snapshots and recovery v1
+# JOURNAL — orderer journals, snapshots and recovery v1.2
 
 Extends matcher's `spec/matcher/JOURNAL.md`. Command and event lines,
 snapshot format and determinism argument are matcher's. This document adds
@@ -9,6 +9,8 @@ what the pipeline needs:
 - a fixed-layout binary encoding
 - a snapshot sidecar
 - the recovery procedure
+- (1.2) per-record checksums, crash repair, and segments rotated at
+  checkpoints
 
 Vectors: `vectors/pipeline/`, `vectors/journal/`, `vectors/recovery/`.
 
@@ -26,6 +28,14 @@ padding):
 
 All `P` pairs exist even when a partition receives no commands. Such files
 hold only their header.
+
+**Segments (1.2).** A journal may be split into segments. The files above
+are segment `0`. A checkpoint (§6) with cut `N` starts segment `N` in every
+partition: `cmd-{p}.{N}.journal` / `cmd-{p}.{N}.bin`, and likewise for
+`evt-`. Segment `N` holds exactly the records with `iseq > N` up to the
+next segment's start. A partition's segments, in ascending start order,
+form one logical journal: every reader in this document reads them that
+way. Each segment file has its own header.
 
 ## 2. Command journal
 
@@ -69,12 +79,12 @@ The file starts with a 64-byte header, followed by fixed-size records.
 | Offset | Size | Field | Value |
 |---:|---:|---|---|
 | 0 | 4 | magic | ASCII `ORDJ` (`4F 52 44 4A`) |
-| 4 | 2 | version | `1` |
+| 4 | 2 | version | `2` (1.2 writers); readers accept `1` |
 | 6 | 1 | kind | `1` = cmd, `2` = evt |
 | 7 | 1 | index | `0` = ladder, `1` = tree |
 | 8 | 4 | partition | `p` |
 | 12 | 4 | partitions | `P` |
-| 16 | 4 | record_size | `40` (cmd) or `48` (evt) |
+| 16 | 4 | record_size | version 2: `48` (cmd) or `56` (evt); version 1: `40` / `48` |
 | 20 | 4 | reserved | zeros |
 | 24 | 8 | pmin | i64 |
 | 32 | 8 | pmax | i64 |
@@ -94,6 +104,15 @@ The file starts with a 64-byte header, followed by fixed-size records.
 | 16 | 8 | order_id | u64 |
 | 24 | 8 | price | i64 (new, replace; cancel `0`) |
 | 32 | 8 | qty | u64 (new, replace; cancel `0`) |
+| 40 | 4 | crc | version 2 only: CRC-32C (Castagnoli) of bytes 0–39 |
+| 44 | 4 | reserved | version 2 only: zeros |
+
+**Checksum (version 2).** CRC-32C as in iSCSI/RFC 3720: reflected
+polynomial `0x82F63B78`, initial value `0xFFFFFFFF`, final XOR
+`0xFFFFFFFF`, stored little-endian. Check value: the nine ASCII bytes
+`123456789` give `0xE3069283`. A record whose checksum does not match is
+corrupt (§5). JSONL journals carry no checksum: they are the debugging
+encoding.
 
 ## 3. Event journal
 
@@ -113,7 +132,8 @@ journals are directly comparable with matcher engine output.
 
 ### 3.2 Binary
 
-The header is as §2.2 with kind `2` and record_size `48`.
+The header is as §2.2 with kind `2` and record_size `56` (version 2) or
+`48` (version 1).
 
 The JSONL and binary headers carry the same fields. Every file of one
 journal directory must agree on `partitions` and the book config.
@@ -131,6 +151,8 @@ journal directory must agree on `partitions` and the book config.
 | 24 | 8 | b | u64 |
 | 32 | 8 | c | i64 |
 | 40 | 8 | d | u64 |
+| 48 | 4 | crc | version 2 only: CRC-32C of bytes 0–47 |
+| 52 | 4 | reserved | version 2 only: zeros |
 
 | ev | a | b | c | d |
 |---|---|---|---|---|
@@ -180,20 +202,26 @@ Inputs: an optional snapshot with its sidecar (cut `N`; no snapshot means
    journals' headers must match it, or recovery fails. Without one, use the
    journals' headers.
 2. Restore the snapshot (§4).
-3. Read every partition's command journal. Records must have strictly
-   increasing `iseq` within each file.
+3. Read every partition's command journal (all its segments, §1). Records
+   must have strictly increasing `iseq` within a partition.
 4. Merge all records by `iseq` (they are disjoint across partitions). Drop
    records with `iseq ≤ N`.
 5. Apply the remaining records in `iseq` order, through the pipeline or
    directly through engines routed per `ROUTING.md`.
 6. Resume sequencing at `max(N, highest replayed iseq) + 1`.
 
+After a crash, partitions may have lost different unsynced tails, so the
+merged `iseq`s can have gaps. That is expected: only commands whose
+durability was acknowledged (`PIPELINE.md` §5) are guaranteed to survive,
+and each partition's surviving records are a prefix of what it was sent.
+
 Determinism (matcher `SPEC.md` §7) guarantees the replayed events are
 byte-identical to the original event journal's records for those commands.
 `orderrecover` exists to prove it (`HARNESS.md`).
 
-**Torn and corrupt journals are errors.** Recovery must fail loudly rather
-than diverge silently. The following are corruption, and harnesses exit 2:
+**Torn and corrupt journals are errors** in the default, *strict* mode.
+Recovery must fail loudly rather than diverge silently. The following are
+corruption, and harnesses exit 2:
 
 - JSONL: a final line without a newline, or any record line that does not
   parse.
@@ -202,3 +230,44 @@ than diverge silently. The following are corruption, and harnesses exit 2:
   name.
 - Headers in one directory that disagree on `partitions` or the book config.
 - Non-increasing `iseq` within a file.
+- Binary version 2: a record whose CRC-32C does not match.
+
+### 5.1 Repair (1.2)
+
+A crash can tear only the end of a file: the last write may be partial, or
+the file may have been extended without its data reaching the disk.
+*Repair* mode handles exactly that, and nothing else. For the **last
+segment** of each journal file family:
+
+- JSONL: a final line without a newline is cut off.
+- Binary: a partial final record is cut off. Then, in version 2, a final
+  complete record whose checksum fails is cut off too (one record at most).
+
+Repair truncates the file to its last valid record, in place, and reports
+how many bytes it removed. Every other defect is still corruption, exactly
+as in strict mode. A pipeline may only append (§6) to repaired or clean
+files.
+
+## 6. Checkpoints (1.2)
+
+A checkpoint bounds recovery time and disk use.
+
+1. Take a snapshot (§4) with cut `N`, through the rings, so every partition
+   cuts at the same point of the ingress order.
+2. At that same control message, every partition's journal writers finish
+   their current segments (written and synced) and open segment `N` (§1).
+3. Write the snapshot body and sidecar durably: write to temporary names,
+   sync, rename, sync the directory.
+4. Only then delete every segment whose start is below `N`, and older
+   checkpoint snapshots.
+
+A crash at any point leaves a recoverable directory: before step 3
+completes, the previous checkpoint and every segment are still present;
+after it, the new snapshot and segment `N` suffice. Recovery reads whatever
+segments exist (§5 step 3) and drops records with `iseq ≤ N`, so stale
+segments left behind by a crash between steps 3 and 4 are harmless.
+
+Checkpoint snapshots live in the journal directory as
+`checkpoint-{N}.snap` and `checkpoint-{N}.snap.meta`. Recovering a
+directory without an explicit snapshot uses the highest-numbered complete
+checkpoint (body and sidecar both present).

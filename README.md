@@ -5,7 +5,7 @@
 The reference implementation of [orderer](https://github.com/abhijitkrm/orderer):
 an LMAX-Disruptor-style, multi-core order-matching engine around the
 [matcher](https://github.com/abhijitkrm/matcher) order book. It implements
-`orderer-spec/1.1`.
+`orderer-spec/1.2`.
 
 ```
 Handle::publish ─▶ ingress ─▶ router ─┬─▶ inbox[p] ─▶ engine[p] ─▶ outbox[p] ─▶ egress plugs
@@ -57,7 +57,8 @@ The full version is `cargo run -p orderer --example quickstart`.
 | Routing | `PartitionMap` | hash (spec/ROUTING.md), plus table overrides |
 | Journals | `JournalConfig`, `FsyncPolicy`, `JournalPlacement` | JSONL or binary; inline (default) or a staged LMAX diamond |
 | Waiting | `Waits` / `WaitStrategy` | BusySpin, Yield, Backoff, Blocking, per stage |
-| Recovery | `orderer::recover` | snapshot + journals → cores at any P |
+| Recovery | `orderer::recover` | snapshot + journals → cores at any P; `journal::repair_dir` for torn tails |
+| Checkpoints | `Pipeline::checkpoint` | durable snapshot + journal segment rotation; old segments removed |
 
 ## Crates
 

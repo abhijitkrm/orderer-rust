@@ -102,6 +102,33 @@ throughput was 2–5M commands/s; with this design, 15–24M.
 **Event journals** are an egress plug using the same chunk writer, without
 fsync. They are derived data: recovery re-derives them byte-identically.
 
+**Checksums and repair (1.2).** Binary records are version 2: each is
+sealed with a CRC-32C of its version-1 bytes (`journal::crc32c`, a const
+table). Readers accept version 1 too. `ReadMode::Repair` (and
+`journal::repair_dir`, behind `orderrecover --repair`) truncates only a
+torn final record of each file's last segment: a partial record, or one
+complete record whose checksum fails. Damage anywhere else stays an error.
+
+**Checkpoints (1.2).** `Pipeline::checkpoint` publishes
+`Control::Checkpoint`. The partition's command-journal writer (the engine
+inline, or the journal thread when staged) opens segment `cmd-{p}.{cut}`
+and sends `Msg::Rotate` to its I/O thread. The I/O thread writes what it
+has, syncs the old file per policy, and switches. The engine then reports
+its snapshot blocks. Egress rotates the event journal through
+`Egress::on_checkpoint`. `checkpoint` drains (so every rotation happened),
+writes `checkpoint-{cut}.snap` and its sidecar with `write_durably`
+(temporary file, fsync, rename, directory fsync), then removes older
+segments and checkpoints. A fresh (non-append) pipeline clears its
+directory's segments and checkpoints first; an appending one continues
+each partition's last segment.
+
+**Crash test.** The spec repo's `scripts/crash.sh` SIGKILLs
+`orderrun --durable` runs and checks that every acked command survived and
+each partition recovered a clean prefix. A process kill never tears a
+`write()`, so those runs exercise recovery and acks, not repair; the repair
+paths are pinned by `vectors/repair/` and the tests in
+`tests/journal_recovery.rs`.
+
 ## 5. Controls and shutdown
 
 Controls (`Barrier`, `Snapshot`, `Shutdown`) are published on the ingress
@@ -174,13 +201,15 @@ A port's threading is free, but its bytes are not. In order:
    commands only. Controls carry the cut.
 5. **Journals**: encode exactly `spec/JOURNAL.md` §2–3 (JSONL with `iseq`
    last, the 64-byte binary header with the book config, little-endian
-   records). Keep syscalls off the engine path. Track `flushed` and
-   `durable` per partition, and release acks only on `durable`.
+   records sealed with CRC-32C). Keep syscalls off the engine path. Track
+   `flushed` and `durable` per partition, and release acks only on
+   `durable`. Then segments, repair and checkpoints (§1, §5.1, §6).
 6. **Harnesses**: `spec/HARNESS.md`. The listing is grouped by partition.
    `orderrun` is always tagged, `ordererfuzz` is tagged only for engine
    files. Exit code 2 for usage, input and corruption errors. Provide
    `scripts/build-harness.sh` (with `CHECKED=1`) and `scripts/test.sh`.
-7. **Prove it**: run `vectors/manifest.json`, then the spec repo's
-   `verify`, `diffuzz`, `exhaustive`, `e2e` and `snapdiff` scripts with the
+7. **Prove it**: run the vendored `spec/conformance.sh` (every vector
+   through the harness tools), then the spec repo's `verify`, `diffuzz`,
+   `exhaustive`, `e2e`, `snapdiff` and `crash` scripts with the
    port checked out as a sibling. Then `bench.sh`, gated on the port's own
    untimed core baseline.

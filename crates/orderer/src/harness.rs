@@ -155,6 +155,18 @@ pub fn common(args: &Args) -> Common {
     Common { map, journal }
 }
 
+/// spec/HARNESS.md §4.1 options beyond the common ones.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RunOpts {
+    /// Take a snapshot after the last command.
+    pub snapshot: bool,
+    /// `--checkpoint-every K` (1.2).
+    pub checkpoint_every: Option<usize>,
+    /// `--durable` (1.2): group-commit fsync, and `acked <p> <iseq>` on
+    /// stderr as acks are released.
+    pub durable: bool,
+}
+
 /// Run `corpus` through a fresh pipeline (one producer, file order), drain
 /// and shut down. Returns the per-partition listing (spec/HARNESS.md §3)
 /// and, if asked, a snapshot taken after the last command.
@@ -165,6 +177,26 @@ pub fn run_corpus<C: MatchingCore>(
     check_invariants: bool,
     snapshot: bool,
 ) -> (Vec<u8>, Option<Snapshot>) {
+    run_corpus_opts::<C>(
+        corpus,
+        common,
+        tagged,
+        check_invariants,
+        RunOpts {
+            snapshot,
+            ..RunOpts::default()
+        },
+    )
+}
+
+pub fn run_corpus_opts<C: MatchingCore>(
+    corpus: &Corpus,
+    common: &Common,
+    tagged: bool,
+    check_invariants: bool,
+    opts: RunOpts,
+) -> (Vec<u8>, Option<Snapshot>) {
+    let snapshot = opts.snapshot;
     let (collect, events) = Collect::new(tagged);
     let mut b: PipelineBuilder<C> = Pipeline::builder()
         .book_config(corpus.book)
@@ -172,14 +204,42 @@ pub fn run_corpus<C: MatchingCore>(
         .egress(collect)
         .check_invariants(check_invariants);
     if let Some(j) = &common.journal {
-        b = b.journal(j.clone());
+        let mut j = j.clone();
+        if opts.durable {
+            j.fsync = FsyncPolicy::every_n(64);
+            let mut last = 0u64;
+            b = b.egress(crate::egress::Acks::new(
+                move |p: u32, m: &crate::msg::EvtMsg| {
+                    if m.iseq != last {
+                        last = m.iseq;
+                        use std::io::Write as _;
+                        let _ = writeln!(std::io::stderr().lock(), "acked {p} {}", m.iseq);
+                    }
+                },
+                1 << 16,
+            ));
+        }
+        b = b.journal(j);
+    } else if opts.durable || opts.checkpoint_every.is_some() {
+        die("--durable and --checkpoint-every need --journal-dir");
     }
     let mut p = b.build().unwrap_or_else(|e| die(e));
     let fail = |e: crate::pipeline::Error| -> ! {
         eprintln!("{e}");
         exit(1)
     };
-    p.publish_batch(&corpus.cmds).unwrap_or_else(|e| fail(e));
+    match opts.checkpoint_every {
+        Some(k) if k > 0 => {
+            for chunk in corpus.cmds.chunks(k) {
+                p.publish_batch(chunk).unwrap_or_else(|e| fail(e));
+                if chunk.len() == k {
+                    p.checkpoint().unwrap_or_else(|e| fail(e));
+                }
+            }
+        }
+        Some(_) => die("--checkpoint-every: K must be at least 1"),
+        None => p.publish_batch(&corpus.cmds).unwrap_or_else(|e| fail(e)),
+    }
     p.drain().unwrap_or_else(|e| fail(e));
     let snap = if snapshot {
         Some(p.snapshot().unwrap_or_else(|e| fail(e)))

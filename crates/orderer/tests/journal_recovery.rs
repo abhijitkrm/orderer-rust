@@ -279,8 +279,11 @@ fn torn_and_corrupt_journals_are_errors() {
         let mut bad = good.clone();
         match format {
             JournalFormat::Binary => {
+                // a well-formed (resealed) record, just out of order
                 let last = bad.len() - journal::CMD_RECORD;
                 bad[last..last + 8].copy_from_slice(&1u64.to_le_bytes());
+                let crc = journal::crc32c(&bad[last..last + journal::CMD_RECORD_V1]);
+                bad[last + 40..last + 44].copy_from_slice(&crc.to_le_bytes());
             }
             JournalFormat::Jsonl => {
                 bad.extend_from_slice(
@@ -349,4 +352,183 @@ fn binary_and_jsonl_encode_the_same_records() {
     }
     let _ = std::fs::remove_dir_all(&a);
     let _ = std::fs::remove_dir_all(&b);
+}
+
+#[test]
+fn crc32c_matches_the_spec_check_value() {
+    assert_eq!(journal::crc32c(b"123456789"), 0xE306_9283);
+}
+
+#[test]
+fn checksums_catch_flipped_bits_anywhere() {
+    let cfg = fuzz_cfg();
+    let cmds = fuzz_corpus(9, 300, 2);
+    let dir = scratch("crc");
+    let mut p = Pipeline::<FifoCore>::builder()
+        .book_config(cfg)
+        .journal(journal_cfg(&dir, JournalFormat::Binary))
+        .build()
+        .unwrap();
+    p.publish_batch(&cmds).unwrap();
+    p.shutdown().unwrap();
+    let path = first_journal(&dir, JournalFormat::Binary);
+    let good = std::fs::read(&path).unwrap();
+    // a flipped bit in a middle record: corrupt in strict and repair mode
+    let mut bad = good.clone();
+    let mid = journal::HEADER + 100 * journal::CMD_RECORD + 20;
+    bad[mid] ^= 0x10;
+    std::fs::write(&path, &bad).unwrap();
+    let e = read_cmd_dir(&dir, JournalFormat::Binary).unwrap_err();
+    assert!(e.detail.contains("checksum"), "{e}");
+    assert!(journal::repair_dir(&dir, JournalFormat::Binary).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn repair_cuts_only_a_torn_tail() {
+    let cfg = fuzz_cfg();
+    let cmds = fuzz_corpus(10, 400, 3);
+    for format in [JournalFormat::Jsonl, JournalFormat::Binary] {
+        let dir = scratch(&format!("repair-{format:?}"));
+        let mut p = Pipeline::<FifoCore>::builder()
+            .book_config(cfg)
+            .journal(journal_cfg(&dir, format))
+            .build()
+            .unwrap();
+        p.publish_batch(&cmds).unwrap();
+        p.shutdown().unwrap();
+        let path = first_journal(&dir, format);
+        let good = std::fs::read(&path).unwrap();
+        let (_, full) = read_cmd_dir(&dir, format).unwrap();
+        let n = full[0].len();
+        // a partial final record
+        std::fs::write(&path, &good[..good.len() - 5]).unwrap();
+        assert!(read_cmd_dir(&dir, format).is_err(), "strict rejects it");
+        let fixed = journal::repair_dir(&dir, format).unwrap();
+        assert_eq!(fixed.len(), 1, "{format:?}");
+        let (_, recs) = read_cmd_dir(&dir, format).unwrap();
+        assert_eq!(recs[0], full[0][..n - 1], "a prefix survives");
+        if format == JournalFormat::Binary {
+            // a complete final record whose bytes never reached the disk
+            let mut zeroed = good.clone();
+            let last = zeroed.len() - journal::CMD_RECORD;
+            zeroed[last..].fill(0);
+            std::fs::write(&path, &zeroed).unwrap();
+            assert!(read_cmd_dir(&dir, format).is_err());
+            assert_eq!(journal::repair_dir(&dir, format).unwrap().len(), 1);
+            assert_eq!(read_cmd_dir(&dir, format).unwrap().1[0], full[0][..n - 1]);
+        }
+        // a clean file is left alone
+        assert!(journal::repair_dir(&dir, format).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn checkpoints_rotate_segments_and_bound_recovery() {
+    let cfg = fuzz_cfg();
+    let cmds = fuzz_corpus(12, 3_000, 6);
+    for format in [JournalFormat::Jsonl, JournalFormat::Binary] {
+        let dir = scratch(&format!("ckpt-{format:?}"));
+        let (collect, events) = Collect::new(true);
+        let mut p = Pipeline::<FifoCore>::builder()
+            .book_config(cfg)
+            .partitions(3)
+            .journal(journal_cfg(&dir, format))
+            .egress(collect)
+            .build()
+            .unwrap();
+        p.publish_batch(&cmds[..1000]).unwrap();
+        let c1 = p.checkpoint().unwrap();
+        p.publish_batch(&cmds[1000..2200]).unwrap();
+        let c2 = p.checkpoint().unwrap();
+        p.publish_batch(&cmds[2200..]).unwrap();
+        p.shutdown().unwrap();
+        assert_eq!((c1.iseq, c2.iseq), (1000, 2200));
+        // only the last checkpoint and its segments remain
+        let cps = journal::list_checkpoints(&dir);
+        assert_eq!(cps.iter().map(|c| c.0).collect::<Vec<_>>(), vec![2200]);
+        for kind in [Kind::Cmd, Kind::Evt] {
+            let segs = journal::list_segments(&dir, kind, format);
+            assert!(segs.iter().all(|s| s.1 == 2200), "{kind:?}: {segs:?}");
+            assert_eq!(segs.len(), 3);
+        }
+        assert_eq!(c2.body, reference_snapshot(cfg, &cmds[..2200]));
+        // recovery from the checkpoint replays exactly the tail
+        let snap = read_snapshot(&cps[0].1).unwrap();
+        let mut replayed = Vec::new();
+        let rec = recover::<FifoCore>(
+            cfg,
+            &PartitionMap::hash(3).unwrap(),
+            Some(&snap),
+            Some((&dir, format)),
+            |_, s, q, e| replayed.push(Event::canonical_sym(q, s, e)),
+        )
+        .unwrap();
+        assert_eq!(rec.replayed, (cmds.len() - 2200) as u64);
+        let all = reference_lines(cfg, &cmds);
+        let prefix = reference_lines(cfg, &cmds[..2200]).len();
+        assert_eq!(replayed, all[prefix..].to_vec());
+        // event journal segments hold the tail's events
+        let mut evts = Vec::new();
+        for q in 0..3 {
+            evts.extend(journal::read_evt_partition(&dir, format, q).unwrap());
+        }
+        evts.sort();
+        let mut want = all[prefix..].to_vec();
+        want.sort();
+        assert_eq!(evts, want);
+        assert_eq!(lines(&events.listing()).len(), all.len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn append_continues_the_last_segment_after_a_checkpoint() {
+    let cfg = fuzz_cfg();
+    let cmds = fuzz_corpus(14, 2_000, 4);
+    let dir = scratch("ckpt-append");
+    let jc = journal_cfg(&dir, JournalFormat::Binary);
+    let mut p = Pipeline::<FifoCore>::builder()
+        .book_config(cfg)
+        .partitions(2)
+        .journal(jc.clone())
+        .build()
+        .unwrap();
+    p.publish_batch(&cmds[..800]).unwrap();
+    p.checkpoint().unwrap();
+    p.publish_batch(&cmds[800..1200]).unwrap();
+    p.shutdown().unwrap();
+    let map = PartitionMap::hash(2).unwrap();
+    let snap = read_snapshot(&journal::list_checkpoints(&dir)[0].1).unwrap();
+    let rec = recover::<FifoCore>(
+        cfg,
+        &map,
+        Some(&snap),
+        Some((&dir, JournalFormat::Binary)),
+        |_, _, _, _| {},
+    )
+    .unwrap();
+    assert_eq!(rec.last_iseq, 1200);
+    let mut jc2 = jc.clone();
+    jc2.append = true;
+    let mut p = Pipeline::<FifoCore>::builder()
+        .book_config(rec.book)
+        .partition_map(map.clone())
+        .journal(jc2)
+        .initial(rec.into_initial())
+        .build()
+        .unwrap();
+    p.publish_batch(&cmds[1200..]).unwrap();
+    let s = p.snapshot().unwrap();
+    p.shutdown().unwrap();
+    assert_eq!(s.iseq, 2000);
+    assert_eq!(s.body, reference_snapshot(cfg, &cmds));
+    let (_, recs) = read_cmd_dir(&dir, JournalFormat::Binary).unwrap();
+    assert_eq!(
+        recs.iter().map(Vec::len).sum::<usize>(),
+        1200,
+        "800 checkpointed away"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -3,3 +3,5 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo test --quiet --workspace --release
+CHECKED=1 scripts/build-harness.sh
+spec/conformance.sh harness/bin vectors

@@ -1,0 +1,7 @@
+{"format":"matcher-snap/1","pmin":0,"pmax":1000000,"max_orders":65536,"index":"ladder"}
+{"rec":"book","symbol":10,"seq":5}
+{"rec":"order","order_id":1,"side":"bid","otype":"limit","tif":"gtc","price":100,"qty":6}
+{"rec":"order","order_id":2,"side":"ask","otype":"limit","tif":"gtc","price":105,"qty":7}
+{"rec":"book","symbol":20,"seq":8}
+{"rec":"book","symbol":30,"seq":4}
+{"rec":"order","order_id":1,"side":"bid","otype":"limit","tif":"gtc","price":90,"qty":2}

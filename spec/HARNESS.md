@@ -1,4 +1,4 @@
-# HARNESS — command-line contract v1
+# HARNESS — command-line contract v1.2
 
 Every implementation ships these five tools with **identical arguments,
 output bytes and exit codes**. That lets `scripts/` drive every language the
@@ -65,12 +65,25 @@ Nothing else is written to stdout. Diagnostics go to stderr.
 
 ## 4. Tools
 
-### 4.1 `orderrun <cmd-file> [common options] [--snap PATH]`
+### 4.1 `orderrun <cmd-file> [common options] [--snap PATH] [--checkpoint-every K] [--durable]`
 
 Runs the file through a pipeline, drains, and prints the event listing
 (§3). With `--snap PATH` it then takes a snapshot (`JOURNAL.md` §4) and
 writes the body to `PATH` and the sidecar to `PATH.meta`. With `P = 1` the
 body equals `matcherrun --snap`'s file.
+
+1.2 options (both need `--journal-dir`):
+
+- `--checkpoint-every K`: after every `K` published commands (file order,
+  so cuts land at `K`, `2K`, …), take a checkpoint (`JOURNAL.md` §6). The
+  journal directory then holds the checkpoint files and only the segments
+  since the last one, byte-identical across implementations.
+- `--durable`: journals use group-commit fsync (every 64 records, or after
+  200 µs idle) instead of none, and every time an `acks` plug releases
+  events it writes `acked <partition> <iseq>` to **stderr**, one line,
+  flushed immediately, where `<iseq>` is the partition's highest released
+  command. `scripts/crash.sh` kills the process with SIGKILL and checks
+  that every acked command survived.
 
 ### 4.2 `ordererfuzz <cmd-file> [common options]`
 
@@ -84,7 +97,7 @@ Two forms:
 
 ```
 orderrecover <snapshot> <tail-file> [--partitions P] [--partition-map FILE]
-orderrecover --journal-dir DIR [--snap PATH] [--binary] [--partitions P] [--partition-map FILE]
+orderrecover --journal-dir DIR [--snap PATH] [--binary] [--repair] [--partitions P] [--partition-map FILE]
 ```
 
 - **Tail form** (mirrors `matcherrecover`). Restore `<snapshot>`, then

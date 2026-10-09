@@ -121,6 +121,91 @@
       ]
     },
     {
+      "name": "checkpoint/multisymbol",
+      "kind": "checkpoint",
+      "desc": "JOURNAL.md 1.2 \u00a76: orderrun --checkpoint-every K at P=2 (listing = pipeline/<input>/P2); journal dirs hold the last checkpoint + its segments; recov.evt = orderrecover from the checkpoint",
+      "input": "pipeline/multisymbol.cmd.jsonl",
+      "partitions": 2,
+      "files": [
+        "checkpoint/multisymbol/K",
+        "checkpoint/multisymbol/recov.evt",
+        "checkpoint/multisymbol/binary/checkpoint-12.snap",
+        "checkpoint/multisymbol/binary/checkpoint-12.snap.meta",
+        "checkpoint/multisymbol/binary/cmd-0.12.bin",
+        "checkpoint/multisymbol/binary/cmd-1.12.bin",
+        "checkpoint/multisymbol/binary/evt-0.12.bin",
+        "checkpoint/multisymbol/binary/evt-1.12.bin",
+        "checkpoint/multisymbol/jsonl/checkpoint-12.snap",
+        "checkpoint/multisymbol/jsonl/checkpoint-12.snap.meta",
+        "checkpoint/multisymbol/jsonl/cmd-0.12.journal",
+        "checkpoint/multisymbol/jsonl/cmd-1.12.journal",
+        "checkpoint/multisymbol/jsonl/evt-0.12.journal",
+        "checkpoint/multisymbol/jsonl/evt-1.12.journal"
+      ]
+    },
+    {
+      "name": "checkpoint/fuzz_s11",
+      "kind": "checkpoint",
+      "desc": "JOURNAL.md 1.2 \u00a76: orderrun --checkpoint-every K at P=2 (listing = pipeline/<input>/P2); journal dirs hold the last checkpoint + its segments; recov.evt = orderrecover from the checkpoint",
+      "input": "pipeline/fuzz_s11.cmd.jsonl",
+      "partitions": 2,
+      "files": [
+        "checkpoint/fuzz_s11/K",
+        "checkpoint/fuzz_s11/recov.evt",
+        "checkpoint/fuzz_s11/binary/checkpoint-2400.snap",
+        "checkpoint/fuzz_s11/binary/checkpoint-2400.snap.meta",
+        "checkpoint/fuzz_s11/binary/cmd-0.2400.bin",
+        "checkpoint/fuzz_s11/binary/cmd-1.2400.bin",
+        "checkpoint/fuzz_s11/binary/evt-0.2400.bin",
+        "checkpoint/fuzz_s11/binary/evt-1.2400.bin",
+        "checkpoint/fuzz_s11/jsonl/checkpoint-2400.snap",
+        "checkpoint/fuzz_s11/jsonl/checkpoint-2400.snap.meta",
+        "checkpoint/fuzz_s11/jsonl/cmd-0.2400.journal",
+        "checkpoint/fuzz_s11/jsonl/cmd-1.2400.journal",
+        "checkpoint/fuzz_s11/jsonl/evt-0.2400.journal",
+        "checkpoint/fuzz_s11/jsonl/evt-1.2400.journal"
+      ]
+    },
+    {
+      "name": "repair/fuzz_s11",
+      "kind": "repair",
+      "desc": "JOURNAL.md 1.2 \u00a75.1: <enc>.torn = P=2 journals with torn tails; orderrecover --repair --partitions 2 on a copy leaves <enc>.repaired and prints recov.<enc>.evt; strict recovery of .torn exits 2",
+      "partitions": 2,
+      "files": [
+        "repair/fuzz_s11/recov.binary.evt",
+        "repair/fuzz_s11/recov.jsonl.evt",
+        "repair/fuzz_s11/binary.repaired/cmd-0.bin",
+        "repair/fuzz_s11/binary.repaired/cmd-1.bin",
+        "repair/fuzz_s11/binary.repaired/evt-0.bin",
+        "repair/fuzz_s11/binary.repaired/evt-1.bin",
+        "repair/fuzz_s11/binary.torn/cmd-0.bin",
+        "repair/fuzz_s11/binary.torn/cmd-1.bin",
+        "repair/fuzz_s11/binary.torn/evt-0.bin",
+        "repair/fuzz_s11/binary.torn/evt-1.bin",
+        "repair/fuzz_s11/jsonl.repaired/cmd-0.journal",
+        "repair/fuzz_s11/jsonl.repaired/cmd-1.journal",
+        "repair/fuzz_s11/jsonl.repaired/evt-0.journal",
+        "repair/fuzz_s11/jsonl.repaired/evt-1.journal",
+        "repair/fuzz_s11/jsonl.torn/cmd-0.journal",
+        "repair/fuzz_s11/jsonl.torn/cmd-1.journal",
+        "repair/fuzz_s11/jsonl.torn/evt-0.journal",
+        "repair/fuzz_s11/jsonl.torn/evt-1.journal"
+      ]
+    },
+    {
+      "name": "compat/v1/fuzz_s11_P2",
+      "kind": "compat",
+      "desc": "version-1 binary journals (orderer-spec/1.1 writers); 1.2 readers recover them: orderrecover --binary --partitions 2 matches listing.evt per symbol",
+      "partitions": 2,
+      "files": [
+        "compat/v1/fuzz_s11_P2/listing.evt",
+        "compat/v1/fuzz_s11_P2/binary/cmd-0.bin",
+        "compat/v1/fuzz_s11_P2/binary/cmd-1.bin",
+        "compat/v1/fuzz_s11_P2/binary/evt-0.bin",
+        "compat/v1/fuzz_s11_P2/binary/evt-1.bin"
+      ]
+    },
+    {
       "name": "recovery/fuzz_s11",
       "kind": "recovery",
       "desc": "orderrun prefix --snap at P=3, then orderrecover snap+tail at P=1 and P=3",

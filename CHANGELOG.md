@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased: orderer-spec/1.2
+
+- Binary journals are version 2: every record is sealed with CRC-32C.
+  Version-1 journals still read.
+- Crash repair: `journal::repair_dir` / `orderrecover --repair` truncate a
+  torn final record; anything else stays corruption.
+- Checkpoints: `Pipeline::checkpoint` rotates every journal onto a new
+  segment at a clean cut, writes the snapshot durably, and removes covered
+  segments and older checkpoints. Recovery reads all segments and, by
+  default, the newest checkpoint.
+- Harness: `orderrun --checkpoint-every K` and `--durable`; `scripts/test.sh`
+  runs the vendored `spec/conformance.sh`.
+- Workspace excludes `upstream/`, so CI's sibling checkouts build.
+
 ## Unreleased: v0.1.0 candidate (implements orderer-spec/1.1)
 
 - **orderer-core**: matcher-rust 71a35f4, vendored, plus the `MatchingCore`

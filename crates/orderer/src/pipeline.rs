@@ -31,7 +31,9 @@ use orderer_disruptor::{
 
 use crate::egress::{Egress, EgressCtx, EgressFactory};
 use crate::journal::{
-    open_journal, push_cmd, push_evt, JournalConfig, JournalFormat, Kind, MAX_RECORD,
+    checkpoint_path, clear_journal_dir, open_journal, open_segment, push_cmd, push_evt,
+    remove_checkpoints_below, remove_segments_below, write_durably, JournalConfig, JournalFormat,
+    Kind, MAX_RECORD,
 };
 use crate::msg::{Body, CmdMsg, Control, EvtBody, EvtMsg};
 use crate::routing::{PartitionMap, RoutingError};
@@ -298,6 +300,7 @@ struct Shared {
     flushed: Box<[Arc<AtomicU64>]>,
     durable: Box<[Arc<AtomicU64>]>,
     alerts: Mutex<Vec<Box<dyn Fn() + Send + Sync>>>,
+    journal: Option<JournalConfig>,
 }
 
 impl Shared {
@@ -569,6 +572,7 @@ impl<C: MatchingCore> Pipeline<C> {
                 .map(|_| Arc::new(AtomicU64::new(if journaled { start_wm } else { u64::MAX })))
                 .collect(),
             alerts: Mutex::new(Vec::new()),
+            journal: b.journal.clone(),
         });
 
         // Journals are opened (and their I/O threads started) before any
@@ -578,6 +582,9 @@ impl<C: MatchingCore> Pipeline<C> {
         if let Some(cfg) = &b.journal {
             let io = |e: std::io::Error| Error::Io(e.to_string());
             std::fs::create_dir_all(&cfg.dir).map_err(io)?;
+            if !cfg.append {
+                clear_journal_dir(&cfg.dir, cfg.format).map_err(io)?;
+            }
             for p in 0..p_count {
                 let f = open_journal(cfg, Kind::Cmd, p, p_count, b.book).map_err(io)?;
                 let marks = Marks {
@@ -638,6 +645,14 @@ impl<C: MatchingCore> Pipeline<C> {
                     p,
                     inbox: inbox_cons[jid.index()].take().unwrap(),
                     w: cmd_writers[p as usize].take().unwrap(),
+                    seg: Segmenter {
+                        dir: b.journal.as_ref().unwrap().dir.clone(),
+                        format: b.journal.as_ref().unwrap().format,
+                        kind: Kind::Cmd,
+                        p,
+                        partitions: p_count,
+                        book: b.book,
+                    },
                     format: b.journal.as_ref().unwrap().format,
                     scratch: String::with_capacity(MAX_RECORD),
                     stopped: false,
@@ -651,6 +666,14 @@ impl<C: MatchingCore> Pipeline<C> {
                 let inline = if journaled && !staged {
                     Some(InlineJournal {
                         w: cmd_writers[p as usize].take().unwrap(),
+                        seg: Segmenter {
+                            dir: b.journal.as_ref().unwrap().dir.clone(),
+                            format: b.journal.as_ref().unwrap().format,
+                            kind: Kind::Cmd,
+                            p,
+                            partitions: p_count,
+                            book: b.book,
+                        },
                         format: b.journal.as_ref().unwrap().format,
                         scratch: String::with_capacity(MAX_RECORD),
                         last_handoff: Instant::now(),
@@ -672,6 +695,14 @@ impl<C: MatchingCore> Pipeline<C> {
             if let Some(w) = evt_writers.get_mut(p as usize).and_then(Option::take) {
                 plugs.push(Box::new(EvtJournal {
                     w,
+                    seg: Segmenter {
+                        dir: b.journal.as_ref().unwrap().dir.clone(),
+                        format: b.journal.as_ref().unwrap().format,
+                        kind: Kind::Evt,
+                        p,
+                        partitions: p_count,
+                        book: b.book,
+                    },
                     format: b.journal.as_ref().unwrap().format,
                     scratch: String::with_capacity(MAX_RECORD),
                     last_handoff: Instant::now(),
@@ -816,6 +847,10 @@ impl<C> Pipeline<C> {
     /// A consistent snapshot of every book, cut at this point of the ingress
     /// order (spec/PIPELINE.md §6, spec/JOURNAL.md §4).
     pub fn snapshot(&self) -> Result<Snapshot, Error> {
+        self.snapshot_op(|op_id| Control::Snapshot { op_id })
+    }
+
+    fn snapshot_op(&self, ctl: impl Fn(u64) -> Control) -> Result<Snapshot, Error> {
         let op_id = self.shared.next_op.fetch_add(1, Ordering::SeqCst) + 1;
         self.shared.snaps.lock().unwrap().insert(
             op_id,
@@ -825,7 +860,7 @@ impl<C> Pipeline<C> {
                 cut: 0,
             },
         );
-        self.publish_ctl(Control::Snapshot { op_id })?;
+        self.publish_ctl(ctl(op_id))?;
         let mut g = self.shared.snaps.lock().unwrap();
         loop {
             self.shared.check()?;
@@ -852,6 +887,28 @@ impl<C> Pipeline<C> {
             iseq: st.cut,
             partitions: self.shared.partitions,
         })
+    }
+
+    /// A checkpoint (spec/JOURNAL.md §6): a snapshot cut at this point of
+    /// the ingress order; every journal rotates onto a new segment at the
+    /// cut; the snapshot is written durably into the journal directory as
+    /// `checkpoint-{cut}.snap`; then older segments and checkpoints are
+    /// removed. Needs journals.
+    pub fn checkpoint(&self) -> Result<Snapshot, Error> {
+        let Some(cfg) = self.shared.journal.clone() else {
+            return Err(Error::Config("checkpoint needs journals".into()));
+        };
+        let snap = self.snapshot_op(|op_id| Control::Checkpoint { op_id })?;
+        // every egress has rotated its event journal once a later barrier
+        // has passed it
+        self.drain()?;
+        let io = |e: std::io::Error| Error::Io(e.to_string());
+        let path = checkpoint_path(&cfg.dir, snap.iseq);
+        write_durably(&path, snap.body.as_bytes()).map_err(io)?;
+        write_durably(&meta_path(&path), snap.meta().as_bytes()).map_err(io)?;
+        remove_segments_below(&cfg.dir, cfg.format, snap.iseq).map_err(io)?;
+        remove_checkpoints_below(&cfg.dir, snap.iseq).map_err(io)?;
+        Ok(snap)
     }
 
     /// Stop accepting commands, drain everything already sequenced, stop
@@ -953,10 +1010,38 @@ fn router_thread(
 /// low load without a handoff per tiny batch.
 const HANDOFF_IDLE: Duration = Duration::from_micros(50);
 
+/// Opens a partition's next journal segment (spec/JOURNAL.md §6 step 2).
+#[derive(Clone)]
+struct Segmenter {
+    dir: std::path::PathBuf,
+    format: JournalFormat,
+    kind: Kind,
+    p: u32,
+    partitions: u32,
+    book: BookConfig,
+}
+
+impl Segmenter {
+    fn rotate(&self, w: &mut ChunkWriter, cut: u64) -> std::io::Result<()> {
+        let f = open_segment(
+            &self.dir,
+            self.format,
+            self.kind,
+            self.p,
+            self.partitions,
+            self.book,
+            cut,
+        )?;
+        w.rotate(f);
+        Ok(())
+    }
+}
+
 struct JournalPart {
     p: u32,
     inbox: Consumer<CmdMsg>,
     w: ChunkWriter,
+    seg: Segmenter,
     format: JournalFormat,
     scratch: String,
     stopped: bool,
@@ -982,7 +1067,8 @@ fn journal_thread(shared: Arc<Shared>, mut parts: Vec<JournalPart>) {
             live += 1;
             idle_on = i;
             let (mut force, mut stop) = (false, false);
-            let (w, format, scratch) = (&mut jp.w, jp.format, &mut jp.scratch);
+            let (w, format, scratch, seg) = (&mut jp.w, jp.format, &mut jp.scratch, &jp.seg);
+            let mut rotate_err = None;
             let n = jp.inbox.poll(|m, _, _| match m.body {
                 Body::Cmd(cmd) => {
                     w.reserve(MAX_RECORD);
@@ -990,9 +1076,18 @@ fn journal_thread(shared: Arc<Shared>, mut parts: Vec<JournalPart>) {
                     w.record(m.iseq);
                 }
                 Body::Ctl(Control::Shutdown) => stop = true,
+                Body::Ctl(Control::Checkpoint { .. }) => {
+                    if let Err(e) = seg.rotate(w, m.iseq) {
+                        rotate_err.get_or_insert(e);
+                    }
+                }
                 Body::Ctl(Control::Barrier { .. } | Control::Snapshot { .. }) => force = true,
                 Body::Ctl(Control::Nop) => {}
             });
+            if let Some(e) = rotate_err {
+                shared.fail(format!("journal {}: rotate: {e}", jp.p));
+                return;
+            }
             total += n;
             if stop {
                 if let Err(e) = jp.w.finish() {
@@ -1023,6 +1118,7 @@ fn journal_thread(shared: Arc<Shared>, mut parts: Vec<JournalPart>) {
 /// ([`JournalPlacement::Inline`]).
 struct InlineJournal {
     w: ChunkWriter,
+    seg: Segmenter,
     format: JournalFormat,
     scratch: String,
     last_handoff: Instant,
@@ -1068,7 +1164,16 @@ fn engine_thread<C: MatchingCore>(
                     }
                 }
                 Body::Ctl(ctl) => {
-                    if let Control::Snapshot { op_id } = ctl {
+                    if let Control::Checkpoint { .. } = ctl {
+                        // the new segment starts at this cut, before the
+                        // snapshot is reported (spec/JOURNAL.md §6 step 2)
+                        if let Some(j) = journal.as_mut() {
+                            if let Err(e) = j.seg.rotate(&mut j.w, m.iseq) {
+                                shared.fail(format!("journal: rotate: {e}"));
+                            }
+                        }
+                    }
+                    if let Control::Snapshot { op_id } | Control::Checkpoint { op_id } = ctl {
                         let mut blocks = Vec::new();
                         core.snapshot_blocks(&mut blocks);
                         let mut g = shared.snaps.lock().unwrap();
@@ -1083,7 +1188,7 @@ fn engine_thread<C: MatchingCore>(
                     match ctl {
                         Control::Shutdown => stop = true,
                         Control::Barrier { .. } | Control::Snapshot { .. } => force = true,
-                        Control::Nop => {}
+                        Control::Checkpoint { .. } | Control::Nop => {}
                     }
                     if stop {
                         // everything this partition journaled is written
@@ -1129,6 +1234,7 @@ fn engine_thread<C: MatchingCore>(
 /// The event journal, as the first egress plug of its partition.
 struct EvtJournal {
     w: ChunkWriter,
+    seg: Segmenter,
     format: JournalFormat,
     scratch: String,
     last_handoff: Instant,
@@ -1158,6 +1264,11 @@ impl Egress for EvtJournal {
     }
     fn on_shutdown(&mut self) {
         self.w.finish().expect("event journal write");
+    }
+    fn on_checkpoint(&mut self, cut: u64) {
+        self.seg
+            .rotate(&mut self.w, cut)
+            .expect("event journal rotate");
     }
 }
 
@@ -1205,6 +1316,11 @@ fn egress_thread(shared: Arc<Shared>, mut parts: Vec<EgressPart>, journaled: boo
                             .store(epoch, Ordering::Release);
                     }
                     EvtBody::Ctl(Control::Shutdown) => stop = true,
+                    EvtBody::Ctl(Control::Checkpoint { .. }) => {
+                        for pl in plugs.iter_mut() {
+                            pl.on_checkpoint(m.iseq);
+                        }
+                    }
                     EvtBody::Ctl(_) => {}
                 }
                 if eob {

@@ -1,0 +1,3 @@
+{"seq":5,"ev":"closed","symbol":30,"order_id":1,"reason":"cancelled"}
+{"seq":6,"ev":"rejected","symbol":30,"order_id":1,"reason":"unknown_order_id"}
+{"seq":1,"ev":"accepted","symbol":40,"order_id":1,"leaves_qty":1}

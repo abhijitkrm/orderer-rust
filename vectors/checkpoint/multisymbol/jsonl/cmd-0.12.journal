@@ -1,0 +1,1 @@
+{"format":"orderer-journal/1","kind":"cmd","partition":0,"partitions":2,"pmin":0,"pmax":1000000,"max_orders":65536,"index":"ladder"}

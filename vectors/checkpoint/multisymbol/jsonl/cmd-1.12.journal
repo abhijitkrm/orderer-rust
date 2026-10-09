@@ -1,0 +1,4 @@
+{"format":"orderer-journal/1","kind":"cmd","partition":1,"partitions":2,"pmin":0,"pmax":1000000,"max_orders":65536,"index":"ladder"}
+{"cmd":"cancel","symbol":30,"order_id":1,"iseq":13}
+{"cmd":"cancel","symbol":30,"order_id":1,"iseq":14}
+{"cmd":"new","symbol":40,"order_id":1,"side":"bid","otype":"limit","price":5,"qty":1,"tif":"post_only","iseq":15}

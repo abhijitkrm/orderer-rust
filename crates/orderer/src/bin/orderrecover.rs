@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! orderrecover <snapshot> <tail-file> [--partitions P] [--partition-map F]
-//! orderrecover --journal-dir DIR [--snap PATH] [--binary] [--partitions P] [--partition-map F]
+//! orderrecover --journal-dir DIR [--snap PATH] [--binary] [--repair] [--partitions P] [--partition-map F]
 //! ```
 //!
 //! Tail form: restore the snapshot, submit every tail line that has no
@@ -10,8 +10,9 @@
 //! grouped by partition). A malformed line exits 2.
 //!
 //! Journal form: recover per spec/JOURNAL.md §5 from the journal directory
-//! (after the optional snapshot's cut) and print the replayed events.
-//! Corrupt or torn journals exit 2.
+//! (after the optional snapshot's cut; by default the directory's newest
+//! checkpoint) and print the replayed events. Corrupt or torn journals exit
+//! 2; `--repair` first truncates torn tails (spec/JOURNAL.md §5.1).
 
 use orderer::harness::*;
 use orderer::recover::{read_snapshot, recover, restore};
@@ -19,7 +20,7 @@ use orderer::*;
 use orderer_core::jsonflat::{get_u64, parse_command};
 use orderer_core::*;
 
-const USAGE: &str = "orderrecover <snapshot> <tail-file> [--partitions P] [--partition-map F]\n       orderrecover --journal-dir DIR [--snap PATH] [--binary] [--partitions P] [--partition-map F]";
+const USAGE: &str = "orderrecover <snapshot> <tail-file> [--partitions P] [--partition-map F]\n       orderrecover --journal-dir DIR [--snap PATH] [--binary] [--repair] [--partitions P] [--partition-map F]";
 
 fn tail_form(snap_path: &str, tail_path: &str, map: PartitionMap) {
     let snap = read_snapshot(snap_path.as_ref()).unwrap_or_else(|e| die(e));
@@ -68,8 +69,26 @@ fn tail_form(snap_path: &str, tail_path: &str, map: PartitionMap) {
     print_bytes(&events.listing());
 }
 
-fn journal_form(dir: &str, snap_path: Option<&str>, format: JournalFormat, map: PartitionMap) {
-    let snap = snap_path.map(|p| read_snapshot(p.as_ref()).unwrap_or_else(|e| die(e)));
+fn journal_form(
+    dir: &str,
+    snap_path: Option<&str>,
+    format: JournalFormat,
+    repair: bool,
+    map: PartitionMap,
+) {
+    if repair {
+        for (path, bytes) in
+            orderer::journal::repair_dir(dir.as_ref(), format).unwrap_or_else(|e| die(e))
+        {
+            eprintln!("repaired {} {bytes}", path.display());
+        }
+    }
+    let snap = match snap_path {
+        Some(p) => Some(read_snapshot(p.as_ref()).unwrap_or_else(|e| die(e))),
+        None => orderer::journal::list_checkpoints(dir.as_ref())
+            .pop()
+            .map(|(_, p)| read_snapshot(&p).unwrap_or_else(|e| die(e))),
+    };
     let mut parts: Vec<Vec<u8>> = vec![Vec::new(); map.partitions() as usize];
     let mut line = String::new();
     recover::<FifoCore>(
@@ -90,7 +109,7 @@ fn journal_form(dir: &str, snap_path: Option<&str>, format: JournalFormat, map: 
 
 fn main() {
     let valued = ["--partitions", "--partition-map", "--journal-dir", "--snap"];
-    let args = Args::parse(USAGE, &valued, &["--binary"]);
+    let args = Args::parse(USAGE, &valued, &["--binary", "--repair"]);
     let p: u32 = args.num("--partitions", 1);
     let map = match args.get("--partition-map") {
         Some(path) => {
@@ -107,9 +126,11 @@ fn main() {
             } else {
                 JournalFormat::Jsonl
             };
-            journal_form(dir, args.get("--snap"), format, map)
+            journal_form(dir, args.get("--snap"), format, args.flag("--repair"), map)
         }
-        (None, [snap, tail]) if args.get("--snap").is_none() && !args.flag("--binary") => {
+        (None, [snap, tail])
+            if args.get("--snap").is_none() && !args.flag("--binary") && !args.flag("--repair") =>
+        {
             tail_form(snap, tail, map)
         }
         _ => die(USAGE),

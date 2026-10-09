@@ -102,6 +102,9 @@ fn every_manifest_vector() {
             "golden" => golden(&v, &name),
             "pipeline" => pipeline(&v, &name, &entry),
             "recovery" => recovery(&v, &name),
+            // 1.2 vectors: exercised through the harness tools by the
+            // vendored spec/conformance.sh (scripts/test.sh)
+            "checkpoint" | "repair" | "compat" => {}
             k => panic!("unknown vector kind {k} — re-vendored spec newer than this test?"),
         }
     }
