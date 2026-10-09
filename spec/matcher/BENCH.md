@@ -23,6 +23,7 @@ vectorgen --workload w1 --out bench/w1 [--seed 42]
 | W3 churn | 100k GTC adds | 100k ops: ~80% cancel/replace on live ids, ~20% adds | lookup, unlink, re-queue |
 | W4 mixed | 100k GTC adds | 1M ops ≈ exchange mix: 9% GTC, 3% IOC, 6% cancel, 82% replace | realistic blended path |
 | W5 depth | books of 1k / 100k / 1M live orders | same W4 mix at each size | depth sensitivity curve |
+| W3-drain | 100k GTC adds | `--workload w3 --n 1000000`: the same churn for 1M ops, which drains the book to a few orders | top-of-book rescan on a wide, nearly empty ladder (regression row) |
 
 (Counts are defaults; `--n` overrides. Keep corpora deterministic for a given
 seed so runs are reproducible and comparable across languages.)

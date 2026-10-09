@@ -12,9 +12,9 @@ re-vendored.
 
 - **upstream**: `orderer`
 - **repo**: `https://github.com/abhijitkrm/orderer`
-- **commit**: `21bf70c8880e08226d978cacb531522fa7a03b68`
+- **commit**: `6a46583cf1fc3aee1e5c2c935143b14d8d716067`
 - **paths**: `spec=spec vectors=vectors`
-- **tag**: `orderer-spec/1.2` (draft: checksums, crash repair, checkpoints)
+- **tag**: `orderer-spec/1.2`, plus matcher `06b5403` (bench docs only)
 
 `docs/VENDORED.sha256` holds every file's checksum. `scripts/vendored.sh`
 verifies the copy against it and, when `../orderer` is checked out, against
@@ -24,7 +24,7 @@ the pinned commit.
 
 `crates/orderer-core/src/` is a port of
 [matcher-rust](https://github.com/abhijitkrm/matcher-rust) at
-`8c4d05ec0474ee3517ad83e017ff7372f4ea7e3d` (includes the `OrderMap` deletion fix orderer found, 71a35f4, and the symbol hasher, which doubled multi-symbol throughput):
+`8657dc7305ce1484064e3c30ee622a81871ebdeb` (includes the `OrderMap` deletion fix orderer found, 71a35f4, the symbol hasher, which doubled multi-symbol throughput, and the ladder rescan fix, 8657dc7):
 
 | File | Status |
 |---|---|
