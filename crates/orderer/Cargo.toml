@@ -13,8 +13,8 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-orderer-core = { path = "../orderer-core", version = "0.1.0" }
-orderer-disruptor = { path = "../orderer-disruptor", version = "0.1.0" }
+orderer-core = { path = "../orderer-core", version = "0.2.0" }
+orderer-disruptor = { path = "../orderer-disruptor", version = "0.2.0" }
 
 [features]
 # QoS-class thread placement hints on macOS (one FFI call; see src/affinity.rs).

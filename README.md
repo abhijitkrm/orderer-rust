@@ -25,6 +25,17 @@ Handle::publish ─▶ ingress ─▶ router ─┬─▶ inbox[p] ─▶ engine
 - **No steady-state allocation**, and `unsafe` in exactly one ring module
   (plus an opt-in, one-call QoS shim).
 
+## Install
+
+```toml
+[dependencies]
+orderer = { git = "https://github.com/abhijitkrm/orderer-rust", tag = "v0.2.0" }
+```
+
+The crates are ready for crates.io at 0.2.0 but not yet published. The
+publish order is `orderer-core` and `orderer-disruptor` (both pass
+`cargo package`), then `orderer`, which depends on them.
+
 ## Quick start
 
 ```rust

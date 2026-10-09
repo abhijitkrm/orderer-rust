@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased: orderer-spec/1.2
+## 0.2.0 (orderer-spec/1.2)
 
 - Binary journals are version 2: every record is sealed with CRC-32C.
   Version-1 journals still read.
@@ -22,7 +22,7 @@
   instead of SipHash, doubling multi-symbol core throughput (W6: ~15M to
   ~30M ops/s untimed on an M1).
 
-## Unreleased: v0.1.0 candidate (implements orderer-spec/1.1)
+## 0.1.0 (orderer-spec/1.1)
 
 - **orderer-core**: matcher-rust 71a35f4, vendored, plus the `MatchingCore`
   seam (`FifoCore`, `NoopCore`) and non-panicking snapshot parsing.
