@@ -605,7 +605,7 @@ fn stats_count_commands_events_and_fsyncs() {
         .stats()
         .partitions
         .iter()
-        .any(|s| s.durable_iseq < s.flushed_iseq)
+        .any(|s| s.fsyncs == 0 || s.durable_iseq < s.flushed_iseq)
         && std::time::Instant::now() < deadline
     {
         std::thread::sleep(std::time::Duration::from_millis(5));

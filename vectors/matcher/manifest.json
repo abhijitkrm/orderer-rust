@@ -42,6 +42,7 @@
     { "file": "edge/039_replace_partial_rest", "desc": "crossing replace partially fills then rests" },
     { "file": "edge/040_bitmap_stress", "desc": "many levels both sides, market sweep then cross" },
     { "file": "edge/041_tree_unbounded", "desc": "tree index: unbounded prices, non-positive price rejects" },
+    { "file": "edge/042_dense_map_churn", "desc": "order-map churn at 32 slots: deletion must not drop live keys (fixed in matcher-rust 71a35f4, matcher-cpp 1285f6c)" },
     { "file": "engine/001_multisymbol", "desc": "engine routing: per-symbol id namespace, per-book seq, lazy book creation" }
   ]
 }
