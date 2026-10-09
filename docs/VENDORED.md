@@ -24,7 +24,7 @@ the pinned commit.
 
 `crates/orderer-core/src/` is a port of
 [matcher-rust](https://github.com/abhijitkrm/matcher-rust) at
-`71a35f46ea4658dd4da89b270cd48d0af01571b5` (the commit that fixed the `OrderMap` deletion bug orderer found):
+`8c4d05ec0474ee3517ad83e017ff7372f4ea7e3d` (includes the `OrderMap` deletion fix orderer found, 71a35f4, and the symbol hasher, which doubled multi-symbol throughput):
 
 | File | Status |
 |---|---|

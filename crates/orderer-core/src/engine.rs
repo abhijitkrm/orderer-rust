@@ -2,21 +2,47 @@
 //! model (each symbol its own single-writer domain).
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::book::OrderBook;
 use crate::sink::Sink;
 use crate::types::*;
 
+/// Hashes a `Symbol` (u32) with one multiply (Fibonacci hashing). Symbols
+/// are not attacker-chosen keys, so std's SipHash buys nothing here and costs
+/// a large share of `submit` on multi-symbol streams.
+#[derive(Default)]
+pub struct SymbolHasher(u64);
+
+impl Hasher for SymbolHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(8) ^ b as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+    #[inline]
+    fn write_u32(&mut self, v: u32) {
+        self.0 = (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+type SymbolMap<V> = HashMap<Symbol, V, BuildHasherDefault<SymbolHasher>>;
+
 pub struct Engine {
     default_cfg: BookConfig,
-    books: HashMap<Symbol, OrderBook>,
+    books: SymbolMap<OrderBook>,
 }
 
 impl Engine {
     pub fn new(default_cfg: BookConfig) -> Engine {
         Engine {
             default_cfg,
-            books: HashMap::new(),
+            books: SymbolMap::default(),
         }
     }
 
