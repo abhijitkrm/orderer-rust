@@ -5,7 +5,7 @@
 The reference implementation of [orderer](https://github.com/abhijitkrm/orderer):
 an LMAX-Disruptor-style, multi-core order-matching engine around the
 [matcher](https://github.com/abhijitkrm/matcher) order book. It implements
-`orderer-spec/1.2`.
+`orderer-spec/1.3`.
 
 ```
 Handle::publish ─▶ ingress ─▶ router ─┬─▶ inbox[p] ─▶ engine[p] ─▶ outbox[p] ─▶ egress plugs
@@ -29,10 +29,10 @@ Handle::publish ─▶ ingress ─▶ router ─┬─▶ inbox[p] ─▶ engine
 
 ```toml
 [dependencies]
-orderer = { git = "https://github.com/abhijitkrm/orderer-rust", tag = "v0.2.0" }
+orderer = { git = "https://github.com/abhijitkrm/orderer-rust", tag = "v0.2.1" }
 ```
 
-The crates are ready for crates.io at 0.2.0 but not yet published. The
+The crates are ready for crates.io at 0.2.1 but not yet published. The
 publish order is `orderer-core` and `orderer-disruptor` (both pass
 `cargo package`), then `orderer`, which depends on them.
 

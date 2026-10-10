@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1 (orderer-spec/1.3)
+
+- Vendors matcher-rust 8657dc7: the price ladder finds the next best price through a
+  summary bitmap, and an emptied side resets at once. A book whose side
+  emptied used to scan the whole ladder per cancel (W3 at 1M ops: 4-24x
+  faster in the matcher bench). Output unchanged.
+- Repair (orderer-spec 1.3), for three kinds of damage SIGKILL left that
+  `--repair` refused: binary tails of all-zero records (an interrupted
+  write on macOS can extend a file with zeros, a whole write buffer of
+  them) are cut; a segment created at a checkpoint whose header never
+  arrived is deleted; and when the last segment holds no records, the
+  torn segment before it is repaired too.
+
 ## 0.2.0 (orderer-spec/1.2)
 
 - Binary journals are version 2: every record is sealed with CRC-32C.
