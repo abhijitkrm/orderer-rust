@@ -895,6 +895,12 @@ fn split_body(
                 return Err(corrupt(path, "torn tail (partial record)"));
             }
             let at = |i: usize| HEADER + i * size;
+            if mode == ReadMode::Repair {
+                // 1.3: zero records an interrupted write left (§5.1)
+                while n > 0 && bytes[at(n - 1)..at(n)].iter().all(|&b| b == 0) {
+                    n -= 1;
+                }
+            }
             if header.version >= 2 {
                 for i in 0..n {
                     let r = &bytes[at(i)..at(i) + size];
@@ -1097,25 +1103,57 @@ pub fn repair_dir(
 ) -> Result<Vec<(PathBuf, u64)>, CorruptJournal> {
     let mut out = Vec::new();
     for kind in [Kind::Cmd, Kind::Evt] {
-        let segs = list_segments(dir, kind, format);
-        let mut last: std::collections::BTreeMap<u32, PathBuf> = Default::default();
-        for (p, _, path) in segs {
-            last.insert(p, path);
+        let mut by_part: std::collections::BTreeMap<u32, Vec<(u64, PathBuf)>> = Default::default();
+        for (p, start, path) in list_segments(dir, kind, format) {
+            by_part.entry(p).or_default().push((start, path));
         }
-        for path in last.values() {
-            let bytes = std::fs::read(path).map_err(|e| corrupt(path, e.to_string()))?;
-            let body = split_body(path, &bytes, format, ReadMode::Repair)?;
-            if body.valid_len < bytes.len() {
-                let f = OpenOptions::new()
-                    .write(true)
-                    .open(path)
+        for segs in by_part.values_mut() {
+            segs.sort();
+            // 1.3: drop trailing segments a crash left without a usable
+            // header; the segment before becomes the last
+            while let Some((start, path)) = segs.last() {
+                let bytes = std::fs::read(path).map_err(|e| corrupt(path, e.to_string()))?;
+                if *start == 0 || !headerless(path, &bytes, format) {
+                    break;
+                }
+                std::fs::remove_file(path)
+                    .and_then(|_| File::open(dir)?.sync_all())
                     .map_err(|e| corrupt(path, e.to_string()))?;
-                f.set_len(body.valid_len as u64)
-                    .and_then(|_| f.sync_all())
-                    .map_err(|e| corrupt(path, e.to_string()))?;
-                out.push((path.clone(), (bytes.len() - body.valid_len) as u64));
+                out.push((path.clone(), bytes.len() as u64));
+                segs.pop();
+            }
+            // repair the last segment; while it holds no records, the one
+            // before it too (its writer may still have been finishing it)
+            for (_, path) in segs.iter().rev() {
+                let bytes = std::fs::read(path).map_err(|e| corrupt(path, e.to_string()))?;
+                let body = split_body(path, &bytes, format, ReadMode::Repair)?;
+                if body.valid_len < bytes.len() {
+                    let f = OpenOptions::new()
+                        .write(true)
+                        .open(path)
+                        .map_err(|e| corrupt(path, e.to_string()))?;
+                    f.set_len(body.valid_len as u64)
+                        .and_then(|_| f.sync_all())
+                        .map_err(|e| corrupt(path, e.to_string()))?;
+                    out.push((path.clone(), (bytes.len() - body.valid_len) as u64));
+                }
+                if !body.records.is_empty() {
+                    break;
+                }
             }
         }
     }
     Ok(out)
+}
+
+/// A segment that cannot hold a record (spec/JOURNAL.md 1.3 §5.1): JSONL
+/// with no newline at all, or binary with an invalid header and nothing but
+/// zeros after it.
+fn headerless(path: &Path, bytes: &[u8], format: JournalFormat) -> bool {
+    match format {
+        JournalFormat::Jsonl => !bytes.contains(&b'\n'),
+        JournalFormat::Binary => {
+            parse_binary_header(path, bytes).is_err() && bytes.iter().skip(HEADER).all(|&b| b == 0)
+        }
+    }
 }

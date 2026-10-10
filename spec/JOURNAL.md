@@ -1,4 +1,4 @@
-# JOURNAL — orderer journals, snapshots and recovery v1.2
+# JOURNAL — orderer journals, snapshots and recovery v1.3
 
 Extends matcher's `spec/matcher/JOURNAL.md`. Command and event lines,
 snapshot format and determinism argument are matcher's. This document adds
@@ -11,6 +11,8 @@ what the pipeline needs:
 - the recovery procedure
 - (1.2) per-record checksums, crash repair, and segments rotated at
   checkpoints
+- (1.3) repair cuts zero-filled tails and deletes a segment a crash left
+  without a usable header
 
 Vectors: `vectors/pipeline/`, `vectors/journal/`, `vectors/recovery/`.
 
@@ -235,17 +237,37 @@ corruption, and harnesses exit 2:
 ### 5.1 Repair (1.2)
 
 A crash can tear only the end of a file: the last write may be partial, or
-the file may have been extended without its data reaching the disk.
+the file may have been extended without its data arriving. The second
+happens without power loss: on macOS, killing a process during a large
+write can leave the file extended by zero bytes where the data never
+landed, a whole write buffer of them.
 *Repair* mode handles exactly that, and nothing else. For the **last
 segment** of each journal file family:
 
 - JSONL: a final line without a newline is cut off.
-- Binary: a partial final record is cut off. Then, in version 2, a final
-  complete record whose checksum fails is cut off too (one record at most).
+- Binary: a partial final record is cut off. Then (1.3) every final
+  record that is entirely zero bytes is cut off; no valid record is all
+  zeros (its checksum would fail, and iseq 0 is never assigned). Then, in
+  version 2, a final complete record whose checksum fails is cut off too
+  (one record at most: the record the interrupted write was filling).
+- (1.3) A segment that cannot hold a record is deleted, if its start is
+  above 0. That is a JSONL segment with no newline at all, or a binary
+  segment whose 64-byte header is invalid (empty, partial or zero-filled)
+  and whose bytes after the header, if any, are all zero. A crash
+  between creating segment `N` at a checkpoint (§6 step 2) and its header
+  reaching the file leaves one. The previous segments hold everything, and repair continues with
+  the segment before it as the last segment. A segment 0 like this is
+  still corruption: its pipeline never journaled a command, so nothing
+  in it was acknowledged.
+- (1.3) If the last segment then holds no records, the segment before it
+  is repaired too, and so on back to the first segment that holds one: a
+  writer may create segment `N` while it is still writing the end of the
+  previous segment (§6 step 2), so a crash can tear a segment that is no
+  longer the last.
 
 Repair truncates the file to its last valid record, in place, and reports
-how many bytes it removed. Every other defect is still corruption, exactly
-as in strict mode. A pipeline may only append (§6) to repaired or clean
+how many bytes it removed (a deleted segment: its whole size). Every
+other defect is still corruption, exactly as in strict mode. A pipeline may only append (§6) to repaired or clean
 files.
 
 ## 6. Checkpoints (1.2)
@@ -254,8 +276,10 @@ A checkpoint bounds recovery time and disk use.
 
 1. Take a snapshot (§4) with cut `N`, through the rings, so every partition
    cuts at the same point of the ingress order.
-2. At that same control message, every partition's journal writers finish
-   their current segments (written and synced) and open segment `N` (§1).
+2. At that same control message, every partition's journal writers open
+   segment `N` (§1) and finish their current segments: written and
+   synced, before any record goes to segment `N`. Segment `N` itself (its
+   header) may appear while the previous segment is still being written.
 3. Write the snapshot body and sidecar durably: write to temporary names,
    sync, rename, sync the directory.
 4. Only then delete every segment whose start is below `N`, and older

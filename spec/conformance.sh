@@ -57,20 +57,22 @@ for input in multisymbol fuzz_s11; do
   echo "ok   checkpoint/$input"
 done
 
-d=$V/repair/fuzz_s11
+for name in fuzz_s11 checkpoint_fuzz_s11 rotation_fuzz_s11 zerofill_fuzz_s11; do
+d=$V/repair/$name
 if [ -d "$d" ]; then
   for enc in jsonl binary; do
     cp -R "$d/$enc.torn" "$W/$enc"
     "$BIN/orderrecover" --journal-dir "$W/$enc" $(enc_flag $enc) --partitions 2 > /dev/null 2>&1
-    [ $? = 2 ] || bad "repair $enc: strict recovery of a torn journal must exit 2"
+    [ $? = 2 ] || bad "repair/$name $enc: strict recovery of a torn journal must exit 2"
     "$BIN/orderrecover" --journal-dir "$W/$enc" $(enc_flag $enc) --repair --partitions 2 > "$W/rec" 2> /dev/null \
-      || bad "repair $enc: --repair failed"
-    cmp -s "$W/rec" "$d/recov.$enc.evt" || bad "repair $enc: recovered events"
-    diff -r -q "$W/$enc" "$d/$enc.repaired" > /dev/null || bad "repair $enc: repaired files differ"
+      || bad "repair/$name $enc: --repair failed"
+    cmp -s "$W/rec" "$d/recov.$enc.evt" || bad "repair/$name $enc: recovered events"
+    diff -r -q "$W/$enc" "$d/$enc.repaired" > /dev/null || bad "repair/$name $enc: repaired files differ"
     rm -rf "${W:?}/$enc"
   done
-  echo "ok   repair/fuzz_s11"
+  echo "ok   repair/$name"
 fi
+done
 
 d=$V/compat/v1/fuzz_s11_P2
 if [ -d "$d" ]; then
