@@ -12,6 +12,10 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+# Real software prefetch in apply_batch (the crate's only `unsafe`).
+prefetch = []
+
 [dependencies]
 
 [dev-dependencies]

@@ -49,6 +49,7 @@ pub use journal::{FsyncPolicy, JournalConfig, JournalFormat};
 pub use msg::{Body, CmdMsg, Control, EvtBody, EvtMsg};
 pub use orderer_disruptor::WaitStrategy;
 pub use pipeline::{
-    meta_path, Error, Handle, Initial, JournalPlacement, Pipeline, PipelineBuilder, Snapshot, Waits,
+    meta_path, EgressPlacement, Error, Handle, Initial, JournalPlacement, Pipeline,
+    PipelineBuilder, Snapshot, Waits,
 };
 pub use routing::{hash_partition, PartitionMap, RoutingError};

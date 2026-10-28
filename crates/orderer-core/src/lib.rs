@@ -22,18 +22,21 @@
 //! assert!(book.order(2).is_none());
 //! ```
 
-#![forbid(unsafe_code)]
+// The default build has no unsafe at all. The opt-in `prefetch` feature allows
+// exactly one audited helper (`hint::imp::hint`, a prefetch hint).
+#![cfg_attr(not(feature = "prefetch"), forbid(unsafe_code))]
+#![cfg_attr(feature = "prefetch", deny(unsafe_code))]
 // Some vendored helpers serve only the debug-build invariant checks.
 #![cfg_attr(not(debug_assertions), allow(dead_code))]
 
 mod book;
 mod core;
 mod engine;
+mod hint;
 mod index;
-mod level;
 mod ordermap;
-mod pool;
 mod sink;
+mod store;
 mod types;
 
 pub mod journal;

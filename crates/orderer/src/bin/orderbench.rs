@@ -17,6 +17,11 @@
 //! --events on|off         also write event journals (default off — spec/BENCH.md §2.2)
 //! --stage-threads J,E     journal / egress thread counts (default 1,1)
 //! --placement inline|stage   where command records are encoded (default inline)
+//! --latency on|off       stamp commands and sample end-to-end latency (default on, the
+//!                         protocol; off measures pure throughput: two fewer clock reads
+//!                         per command, latency columns 0)
+//! --egress thread|inline  where the egress plugs run (inline: on the engine thread,
+//!                         journals off only; default thread)
 //! ```
 //!
 //! Prints one RESULTS.md row to stdout; environment to stderr.
@@ -28,7 +33,7 @@ use orderer::harness::{die, load_corpus, Args, Corpus};
 use orderer::*;
 use orderer_core::*;
 
-const USAGE: &str = "orderbench <prefix> --mode core|pipe [--partitions P] [--producers N] [--journal binary|jsonl|off] [--journal-dir DIR] [--fsync N] [--tag NAME] [--core fifo|noop] [--waits relaxed|low] [--batch N] [--ingress N] [--inbox N] [--outbox N] [--baseline OPS] [--stats]";
+const USAGE: &str = "orderbench <prefix> --mode core|pipe [--partitions P] [--producers N] [--journal binary|jsonl|off] [--journal-dir DIR] [--fsync N] [--tag NAME] [--core fifo|noop] [--waits relaxed|low] [--batch N] [--ingress N] [--inbox N] [--outbox N] [--baseline OPS] [--egress thread|inline] [--latency on|off] [--stats]";
 
 fn percentile(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
@@ -134,6 +139,8 @@ struct PipeOpts {
     rings: (usize, usize, usize),
     stage_threads: Option<(usize, usize)>,
     placement: JournalPlacement,
+    egress_placement: EgressPlacement,
+    latency: bool,
     stats: bool,
 }
 
@@ -146,7 +153,9 @@ fn build<C: MatchingCore>(book: BookConfig, o: &PipeOpts, metrics: Option<Metric
     if let Some((j, e)) = o.stage_threads {
         b = b.stage_threads(j, e);
     }
-    b = b.journal_placement(o.placement);
+    b = b
+        .journal_placement(o.placement)
+        .egress_placement(o.egress_placement);
     if let Some(j) = &o.journal {
         b = b.journal(j.clone());
     }
@@ -178,7 +187,7 @@ fn pipe_mode<C: MatchingCore>(setup: &Corpus, run: &Corpus, o: &PipeOpts) -> Row
     for &(s, c) in &run.cmds {
         streams[s as usize % n].push((s, c));
     }
-    p.set_timestamps(true);
+    p.set_timestamps(o.latency);
     let start = Arc::new(Barrier::new(n + 1));
     let batch = o.batch;
     let producers: Vec<_> = streams
@@ -275,6 +284,8 @@ fn main() {
             "--events",
             "--stage-threads",
             "--placement",
+            "--egress",
+            "--latency",
         ],
         &["--stats"],
     );
@@ -362,6 +373,8 @@ fn main() {
                 "--events",
                 "--stage-threads",
                 "--placement",
+                "--egress",
+                "--latency",
             ] {
                 if let Some(v) = args.get(k) {
                     config.push(format!("{}={v}", &k[2..]));
@@ -382,6 +395,16 @@ fn main() {
                     "inline" => JournalPlacement::Inline,
                     "stage" => JournalPlacement::Stage,
                     v => die(format!("--placement: unknown {v}")),
+                },
+                latency: match args.get("--latency").unwrap_or("on") {
+                    "on" => true,
+                    "off" => false,
+                    v => die(format!("--latency: unknown {v}")),
+                },
+                egress_placement: match args.get("--egress").unwrap_or("thread") {
+                    "thread" => EgressPlacement::Thread,
+                    "inline" => EgressPlacement::Inline,
+                    v => die(format!("--egress: unknown {v}")),
                 },
                 stage_threads: args.get("--stage-threads").map(|v| {
                     let (j, e) = v

@@ -128,6 +128,20 @@ pub enum JournalPlacement {
     Inline,
 }
 
+/// Where the egress plugs run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EgressPlacement {
+    /// Egress threads fed by a per-partition outbox ring (the default).
+    Thread,
+    /// The engine thread calls the plugs itself right after applying each
+    /// command: no outbox ring, no egress thread, no per-event copy or
+    /// cross-core hop. Plugs run on the engine's critical path, so keep them
+    /// cheap. Requires journals off: the event journal and the ack gating on
+    /// durability are egress-thread work (`Error::Config` otherwise). Plugs
+    /// see exactly the same events in the same order.
+    Inline,
+}
+
 /// Starting state for a pipeline built after recovery.
 pub struct Initial<C> {
     /// One core per partition, already restored/replayed.
@@ -152,6 +166,7 @@ pub struct PipelineBuilder<C> {
     journal_threads: Option<usize>,
     egress_threads: Option<usize>,
     placement: JournalPlacement,
+    egress_placement: EgressPlacement,
     checkpoint_every: Option<Duration>,
 }
 
@@ -175,6 +190,7 @@ impl<C: MatchingCore> Default for PipelineBuilder<C> {
             journal_threads: None,
             egress_threads: None,
             placement: JournalPlacement::Inline,
+            egress_placement: EgressPlacement::Thread,
             checkpoint_every: None,
         }
     }
@@ -248,6 +264,12 @@ impl<C: MatchingCore> PipelineBuilder<C> {
     /// Check book invariants after every command (fuzzing; slow).
     pub fn check_invariants(mut self, on: bool) -> Self {
         self.check_invariants = on;
+        self
+    }
+
+    /// Where the egress plugs run (default [`EgressPlacement::Thread`]).
+    pub fn egress_placement(mut self, placement: EgressPlacement) -> Self {
+        self.egress_placement = placement;
         self
     }
 
@@ -572,6 +594,13 @@ impl<C: MatchingCore> Pipeline<C> {
             None => ((0..p_count).map(|_| C::new(b.book)).collect(), 1),
         };
         let journaled = b.journal.is_some();
+        let inline_egress = b.egress_placement == EgressPlacement::Inline;
+        if inline_egress && journaled {
+            return Err(Error::Config(
+                "inline egress requires journals off (the event journal and ack gating run on egress threads)"
+                    .into(),
+            ));
+        }
         let start_wm = next_iseq - 1;
         let shared = Arc::new(Shared {
             partitions: p_count,
@@ -663,12 +692,46 @@ impl<C: MatchingCore> Pipeline<C> {
             let mut inbox_cons: Vec<Option<Consumer<CmdMsg>>> =
                 inbox_cons.into_iter().map(Some).collect();
 
-            let mut ob = RingBuilder::<EvtMsg>::new(b.outbox);
-            ob.consumer_with(&[], b.waits.egress);
-            let (outbox, mut outbox_cons) = ob.build_single();
-            let ctl = outbox.control();
-            outbox_ctls.push(ctl.clone());
-            alerts.push(Box::new(move || ctl.alert()));
+            let (outbox, mut outbox_cons) = if inline_egress {
+                (None, Vec::new())
+            } else {
+                let mut ob = RingBuilder::<EvtMsg>::new(b.outbox);
+                ob.consumer_with(&[], b.waits.egress);
+                let (outbox, outbox_cons) = ob.build_single();
+                let ctl = outbox.control();
+                outbox_ctls.push(ctl.clone());
+                alerts.push(Box::new(move || ctl.alert()));
+                (Some(outbox), outbox_cons)
+            };
+            let ctx = EgressCtx {
+                partition: p,
+                partitions: p_count,
+                epoch: shared.epoch,
+                durable: shared.durable[p as usize].clone(),
+            };
+            let mut plugs: Vec<Box<dyn Egress>> = Vec::with_capacity(factories.len() + 1);
+            if let Some(w) = evt_writers.get_mut(p as usize).and_then(Option::take) {
+                plugs.push(Box::new(EvtJournal {
+                    w,
+                    seg: Segmenter {
+                        dir: b.journal.as_ref().unwrap().dir.clone(),
+                        format: b.journal.as_ref().unwrap().format,
+                        kind: Kind::Evt,
+                        p,
+                        partitions: p_count,
+                        book: b.book,
+                    },
+                    format: b.journal.as_ref().unwrap().format,
+                    scratch: String::with_capacity(MAX_RECORD),
+                    last_handoff: Instant::now(),
+                }));
+            }
+            plugs.extend(factories.iter().map(|f| f.create(&ctx)));
+            let (inline_plugs, egress_plugs) = if inline_egress {
+                (Some(plugs), Vec::new())
+            } else {
+                (None, plugs)
+            };
 
             if let Some(jid) = jid {
                 journal_groups[p as usize % n_journal].push(JournalPart {
@@ -713,41 +776,29 @@ impl<C: MatchingCore> Pipeline<C> {
                 };
                 let counters = shared.counters[p as usize].clone();
                 threads.push(spawn("engine", p, move || {
-                    engine_thread(sh, cons, outbox, core, check, inline, counters)
-                }));
-            }
-            let ctx = EgressCtx {
-                partition: p,
-                partitions: p_count,
-                epoch: shared.epoch,
-                durable: shared.durable[p as usize].clone(),
-            };
-            let mut plugs: Vec<Box<dyn Egress>> = Vec::with_capacity(factories.len() + 1);
-            if let Some(w) = evt_writers.get_mut(p as usize).and_then(Option::take) {
-                plugs.push(Box::new(EvtJournal {
-                    w,
-                    seg: Segmenter {
-                        dir: b.journal.as_ref().unwrap().dir.clone(),
-                        format: b.journal.as_ref().unwrap().format,
-                        kind: Kind::Evt,
+                    engine_thread(
+                        sh,
+                        cons,
+                        outbox,
+                        inline_plugs,
                         p,
-                        partitions: p_count,
-                        book: b.book,
-                    },
-                    format: b.journal.as_ref().unwrap().format,
-                    scratch: String::with_capacity(MAX_RECORD),
-                    last_handoff: Instant::now(),
+                        core,
+                        check,
+                        inline,
+                        counters,
+                    )
                 }));
             }
-            plugs.extend(factories.iter().map(|f| f.create(&ctx)));
-            egress_groups[p as usize % n_egress].push(EgressPart {
-                p,
-                outbox: outbox_cons.pop().unwrap(),
-                plugs,
-                ctx,
-                last_iseq: 0,
-                stopped: false,
-            });
+            if !inline_egress {
+                egress_groups[p as usize % n_egress].push(EgressPart {
+                    p,
+                    outbox: outbox_cons.pop().unwrap(),
+                    plugs: egress_plugs,
+                    ctx,
+                    last_iseq: 0,
+                    stopped: false,
+                });
+            }
         }
         if journaled && b.placement == JournalPlacement::Stage {
             for (i, parts) in journal_groups.into_iter().enumerate() {
@@ -757,11 +808,13 @@ impl<C: MatchingCore> Pipeline<C> {
                 }));
             }
         }
-        for (i, parts) in egress_groups.into_iter().enumerate() {
-            let sh = shared.clone();
-            threads.push(spawn("egress", i as u32, move || {
-                egress_thread(sh, parts, journaled)
-            }));
+        if !inline_egress {
+            for (i, parts) in egress_groups.into_iter().enumerate() {
+                let sh = shared.clone();
+                threads.push(spawn("egress", i as u32, move || {
+                    egress_thread(sh, parts, journaled)
+                }));
+            }
         }
 
         let mut rb = RingBuilder::<CmdMsg>::new(b.ingress);
@@ -1262,10 +1315,13 @@ struct InlineJournal {
     last_handoff: Instant,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn engine_thread<C: MatchingCore>(
     shared: Arc<Shared>,
     mut inbox: Consumer<CmdMsg>,
-    mut out: SingleProducer<EvtMsg>,
+    mut out: Option<SingleProducer<EvtMsg>>,
+    mut inline_plugs: Option<Vec<Box<dyn Egress>>>,
+    p: u32,
     mut core: C,
     check_invariants: bool,
     mut journal: Option<InlineJournal>,
@@ -1293,13 +1349,27 @@ fn engine_thread<C: MatchingCore>(
                     commands += 1;
                     core.apply(m.symbol, cmd, &mut |sym, seq, ev| {
                         events += 1;
-                        let _ = out.stage(|e| {
-                            e.iseq = iseq;
-                            e.seq = seq;
-                            e.t_pub = t_pub;
-                            e.symbol = sym;
-                            e.body = EvtBody::Event(*ev);
-                        });
+                        if let Some(plugs) = inline_plugs.as_mut() {
+                            // inline egress: no outbox, no copy, no hop
+                            let em = EvtMsg {
+                                iseq,
+                                seq,
+                                t_pub,
+                                symbol: sym,
+                                body: EvtBody::Event(*ev),
+                            };
+                            for pl in plugs.iter_mut() {
+                                pl.on_event(&em);
+                            }
+                        } else if let Some(o) = out.as_mut() {
+                            let _ = o.stage(|e| {
+                                e.iseq = iseq;
+                                e.seq = seq;
+                                e.t_pub = t_pub;
+                                e.symbol = sym;
+                                e.body = EvtBody::Event(*ev);
+                            });
+                        }
                     });
                     if check_invariants {
                         core.check_invariants();
@@ -1341,22 +1411,62 @@ fn engine_thread<C: MatchingCore>(
                             }
                         }
                     }
-                    let _ = out.stage(|e| {
-                        e.iseq = m.iseq;
-                        e.seq = 0;
-                        e.t_pub = 0;
-                        e.symbol = 0;
-                        e.body = EvtBody::Ctl(ctl);
-                    });
+                    if let Some(plugs) = inline_plugs.as_mut() {
+                        // what the egress thread does for a control
+                        match ctl {
+                            Control::Barrier { epoch } => {
+                                for pl in plugs.iter_mut() {
+                                    pl.on_batch_end();
+                                    pl.on_idle();
+                                }
+                                shared.egress_epoch[p as usize]
+                                    .0
+                                    .store(epoch, Ordering::Release);
+                            }
+                            Control::Checkpoint { .. } => {
+                                for pl in plugs.iter_mut() {
+                                    pl.on_checkpoint(m.iseq);
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else if let Some(o) = out.as_mut() {
+                        let _ = o.stage(|e| {
+                            e.iseq = m.iseq;
+                            e.seq = 0;
+                            e.t_pub = 0;
+                            e.symbol = 0;
+                            e.body = EvtBody::Ctl(ctl);
+                        });
+                    }
                 }
             }
             if eob {
-                out.commit();
+                if let Some(o) = out.as_mut() {
+                    o.commit();
+                }
+                if let Some(plugs) = inline_plugs.as_mut() {
+                    for pl in plugs.iter_mut() {
+                        pl.on_batch_end();
+                    }
+                }
             }
         });
         if n > 0 {
             counters.commands.store(commands, Ordering::Relaxed);
             counters.events.store(events, Ordering::Relaxed);
+        }
+        if let Some(plugs) = inline_plugs.as_mut() {
+            if stop {
+                for pl in plugs.iter_mut() {
+                    pl.on_idle();
+                    pl.on_shutdown();
+                }
+            } else if n == 0 {
+                for pl in plugs.iter_mut() {
+                    pl.on_idle();
+                }
+            }
         }
         if stop || inbox.is_alerted() {
             break;
@@ -1374,7 +1484,9 @@ fn engine_thread<C: MatchingCore>(
             inbox.reset_idle();
         }
     }
-    out.commit();
+    if let Some(o) = out.as_mut() {
+        o.commit();
+    }
 }
 
 /// The event journal, as the first egress plug of its partition.

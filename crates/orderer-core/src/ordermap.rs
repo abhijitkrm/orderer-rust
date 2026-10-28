@@ -1,18 +1,33 @@
-//! Open-addressed `order_id -> pool index` map.
+//! Open-addressed `order_id -> loc` map (docs/LAYOUT.md §3).
 //! Linear probing, power-of-two capacity, tombstone-free deletion via
 //! backward-shift (Knuth 6.4 algorithm R). Fibonacci hashing keeps sequential
 //! order ids spread evenly.
+//!
+//! Storage is split: a dense 1-byte tag per slot (0 = empty, else
+//! `0x80 | h >> 57`) and the `{key, val}` entries. Probes compare the tag
+//! first and read an entry only on a tag match, so an absent-id check — every
+//! New's duplicate test — touches only the tag array.
+
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct Entry {
+    key: u64,
+    val: u32,
+}
 
 /// Map `u64 -> u32` optimized for dense sequential ids.
 pub struct OrderMap {
-    keys: Vec<u64>,
-    vals: Vec<u32>,
-    used: Vec<u8>, // 0 = empty, 1 = occupied
+    tags: Vec<u8>,
+    entries: Vec<Entry>,
     mask: usize,
     len: usize,
+    /// Bumped by every `remove`. A slot from `find` stays valid until the
+    /// next removal (backward shift may relocate entries; inserting a new key
+    /// never moves existing ones).
+    pub removes: u64,
 }
 
-#[inline]
+#[inline(always)]
 fn mix(k: u64) -> u64 {
     // Fibonacci multiply then fold high entropy down — sequential order ids
     // have near-zero entropy in the low product bits, which would cluster.
@@ -20,15 +35,21 @@ fn mix(k: u64) -> u64 {
     h ^ (h >> 32)
 }
 
+/// Slot from the low bits, tag from the top 7 (independent of the slot).
+#[inline(always)]
+fn tag_of(h: u64) -> u8 {
+    (h >> 57) as u8 | 0x80
+}
+
 impl OrderMap {
     pub fn with_capacity(live_max: usize) -> OrderMap {
         let cap = (live_max.saturating_mul(2)).next_power_of_two().max(16);
         OrderMap {
-            keys: vec![0; cap],
-            vals: vec![0; cap],
-            used: vec![0; cap],
+            tags: vec![0; cap],
+            entries: vec![Entry::default(); cap],
             mask: cap - 1,
             len: 0,
+            removes: 0,
         }
     }
 
@@ -37,74 +58,101 @@ impl OrderMap {
         self.len
     }
 
-    #[inline]
-    pub fn contains(&self, key: u64) -> bool {
-        self.get(key).is_some()
-    }
-
-    #[inline]
-    pub fn get(&self, key: u64) -> Option<u32> {
-        let mut i = (mix(key) as usize) & self.mask;
+    /// Slot index holding `key`, if present.
+    #[inline(always)]
+    pub fn find(&self, key: u64) -> Option<usize> {
+        let h = mix(key);
+        let t = tag_of(h);
+        let mut i = h as usize & self.mask;
         loop {
-            if self.used[i] == 0 {
+            let ti = self.tags[i];
+            if ti == 0 {
                 return None;
             }
-            if self.keys[i] == key {
-                return Some(self.vals[i]);
+            if ti == t && self.entries[i].key == key {
+                return Some(i);
             }
             i = (i + 1) & self.mask;
         }
     }
 
+    #[inline(always)]
+    pub fn contains(&self, key: u64) -> bool {
+        self.find(key).is_some()
+    }
+
+    #[inline(always)]
+    pub fn get(&self, key: u64) -> Option<u32> {
+        self.find(key).map(|i| self.entries[i].val)
+    }
+
+    /// Value at a slot returned by `find`.
+    #[inline(always)]
+    pub fn val_at(&self, slot: usize) -> u32 {
+        self.entries[slot].val
+    }
+
+    /// Overwrite the value at a slot from `find` — valid only while
+    /// `removes` is unchanged since that `find`.
+    #[inline(always)]
+    pub fn set_val_at(&mut self, slot: usize, val: u32) {
+        self.entries[slot].val = val;
+    }
+
+    /// Prefetch hint for `key`'s home slot (tag + entry).
+    #[inline(always)]
+    pub fn prefetch(&self, key: u64) {
+        let i = mix(key) as usize & self.mask;
+        if let (Some(t), Some(e)) = (self.tags.get(i), self.entries.get(i)) {
+            crate::hint::prefetch_read(t);
+            crate::hint::prefetch_read(&e.key);
+        }
+    }
+
     /// Insert; returns old value if the key existed.
+    #[inline(always)]
     pub fn insert(&mut self, key: u64, val: u32) -> Option<u32> {
-        let mut i = (mix(key) as usize) & self.mask;
+        let h = mix(key);
+        let t = tag_of(h);
+        let mut i = h as usize & self.mask;
         loop {
-            if self.used[i] == 0 {
-                self.used[i] = 1;
-                self.keys[i] = key;
-                self.vals[i] = val;
+            let ti = self.tags[i];
+            if ti == 0 {
+                self.tags[i] = t;
+                self.entries[i] = Entry { key, val };
                 self.len += 1;
                 return None;
             }
-            if self.keys[i] == key {
-                return Some(core::mem::replace(&mut self.vals[i], val));
+            if ti == t && self.entries[i].key == key {
+                return Some(core::mem::replace(&mut self.entries[i].val, val));
             }
             i = (i + 1) & self.mask;
         }
     }
 
     /// Remove; returns the value if present.
+    #[inline(always)]
     pub fn remove(&mut self, key: u64) -> Option<u32> {
-        let mut i = (mix(key) as usize) & self.mask;
-        loop {
-            if self.used[i] == 0 {
-                return None;
-            }
-            if self.keys[i] == key {
-                break;
-            }
-            i = (i + 1) & self.mask;
-        }
-        let val = self.vals[i];
-        self.used[i] = 0;
+        let i = self.find(key)?;
+        let val = self.entries[i].val;
+        self.tags[i] = 0;
         self.len -= 1;
+        self.removes += 1;
         // Backward-shift deletion (Knuth 6.4, Algorithm R): scan forward from
         // the hole; move back any entry whose probe chain crosses it.
         //
         // An entry that cannot move must leave the hole where it is — only
-        // the scan advances. (Before this fix the can't-move branch also
-        // moved the hole onto that live slot, so a later shift overwrote
-        // it: a key silently vanished, map `len` drifted from the pool, and
-        // level totals eventually underflowed.)
+        // the scan advances. (Moving the hole onto that live slot lets a
+        // later shift overwrite it: a key silently vanishes.)
         let mut hole = i;
         let mut j = i;
         loop {
             j = (j + 1) & self.mask;
-            if self.used[j] == 0 {
+            let tj = self.tags[j];
+            if tj == 0 {
                 return Some(val);
             }
-            let home = (mix(self.keys[j]) as usize) & self.mask;
+            let home = (mix(self.entries[j].key) as usize) & self.mask;
             // `home` in the cyclic interval (hole, j] means j cannot move back.
             let in_interval = if hole < j {
                 home > hole && home <= j
@@ -112,10 +160,9 @@ impl OrderMap {
                 home > hole || home <= j
             };
             if !in_interval {
-                self.keys[hole] = self.keys[j];
-                self.vals[hole] = self.vals[j];
-                self.used[hole] = 1;
-                self.used[j] = 0;
+                self.tags[hole] = tj;
+                self.entries[hole] = self.entries[j];
+                self.tags[j] = 0;
                 hole = j;
             }
         }
@@ -157,5 +204,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `replace`'s shortcut: a slot from `find` survives inserts of other
+    /// keys (no removal in between), so writing through it is exact.
+    #[test]
+    fn find_slot_survives_inserts() {
+        let mut m = OrderMap::with_capacity(64);
+        for k in 0..60u64 {
+            m.insert(k * 977, k as u32);
+        }
+        let r = m.removes;
+        let slot = m.find(5 * 977).unwrap();
+        for k in 1000..1060u64 {
+            m.insert(k, 0);
+        }
+        assert_eq!(m.removes, r);
+        m.set_val_at(slot, 4242);
+        assert_eq!(m.get(5 * 977), Some(4242));
+        m.remove(1000);
+        assert_eq!(m.removes, r + 1);
     }
 }

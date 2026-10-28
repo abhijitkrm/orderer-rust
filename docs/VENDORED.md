@@ -24,14 +24,14 @@ the pinned commit.
 
 `crates/orderer-core/src/` is a port of
 [matcher-rust](https://github.com/abhijitkrm/matcher-rust) at
-`8657dc7305ce1484064e3c30ee622a81871ebdeb` (includes the `OrderMap` deletion fix orderer found, 71a35f4, the symbol hasher, which doubled multi-symbol throughput, and the ladder rescan fix, 8657dc7):
+`5ab6488eaa9158b0d8f03096e8baba3da954f897` (the chunk-store layout of `docs/LAYOUT.md`, the tagged `OrderMap`, `apply_batch`, and the forced-inline hot path, on top of the `OrderMap` deletion fix orderer found, the symbol hasher and the ladder rescan fix):
 
 | File | Status |
 |---|---|
-| `book.rs engine.rs index.rs level.rs ordermap.rs pool.rs sink.rs types.rs journal.rs jsonflat.rs` | verbatim (`ordermap.rs` carries the upstream fix for the deletion bug orderer reported) |
+| `book.rs engine.rs hint.rs index.rs ordermap.rs sink.rs store.rs types.rs journal.rs jsonflat.rs` | verbatim (`ordermap.rs` carries the upstream fix for the deletion bug orderer reported) |
 | `snapshot.rs` | verbatim, plus `write_header`, `try_parse` (errors instead of panics) and `validate_book` |
 | `core.rs` | new: the `MatchingCore` seam, `FifoCore`, `NoopCore` |
-| `lib.rs` | crate docs and exports adapted |
+| `lib.rs` | crate docs and exports adapted; the matcher `prefetch` feature (one audited `unsafe` hint, off by default) is carried over |
 | `tests/golden.rs tests/snapshot.rs` | verbatim, except the crate name and vector paths |
 
 The golden corpus is the parity proof: semantics may only change through

@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Vendors matcher-rust 5ab6488: resting orders live inline in 128-byte
+  per-level chunks (`store.rs` replaces `pool.rs` and `level.rs`), the order
+  map has a 1-byte tag array, and the hot path is `#[inline(always)]`. Core
+  W4 untimed 31.4M -> 35.3M. Output unchanged (golden vectors, 8-seed
+  `diffuzz`). The default pipeline did not get faster: it was not core-bound.
+- `EgressPlacement::Inline` (`PipelineBuilder::egress_placement`, default
+  `Thread`): the engine thread runs the egress plugs itself, with no outbox
+  ring, egress thread or per-event copy. Journals must be off (`Error::Config`
+  otherwise). Same events, same order (`tests/egress_placement.rs`). Helps when
+  cores are scarce.
+- `orderbench --egress thread|inline` and `--latency on|off`. `--latency off`
+  stops stamping and sampling commands: the protocol's two clock reads per
+  command cost more than the rest of the router, so with it off the
+  journals-off pipeline is ~46M commands/s at P=3 (27.8M with latency on), and
+  the no-op pipeline reaches 90-150M. Default `on` is the BENCH.md protocol.
+
 ## 0.2.1 (orderer-spec/1.3)
 
 - Vendors matcher-rust 8657dc7: the price ladder finds the next best price through a

@@ -11,8 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::level::Level;
-use crate::pool::NIL;
+use crate::store::{Level, NIL};
 use crate::types::{Price, Qty, Side};
 
 pub enum PriceIndex {
@@ -39,7 +38,7 @@ impl PriceIndex {
     }
 
     /// Existing level at `price` (mutable).
-    #[inline]
+    #[inline(always)]
     pub fn level_mut(&mut self, price: Price) -> Option<&mut Level> {
         match self {
             PriceIndex::Ladder(l) => l.level_mut(price),
@@ -56,8 +55,18 @@ impl PriceIndex {
         }
     }
 
+    /// Raw ladder slot at `price` (empty or not; `None` out of range or for
+    /// the tree index). Prefetch look-ahead only.
+    #[inline(always)]
+    pub fn peek(&self, price: Price) -> Option<&Level> {
+        match self {
+            PriceIndex::Ladder(l) => l.levels.get(price.wrapping_sub(l.base) as usize),
+            PriceIndex::Tree(_) => None,
+        }
+    }
+
     /// Get-or-create the level at `price` for a resting insert.
-    #[inline]
+    #[inline(always)]
     pub fn level_insert(&mut self, price: Price) -> &mut Level {
         match self {
             PriceIndex::Ladder(l) => l.level_insert(price),
@@ -66,7 +75,7 @@ impl PriceIndex {
     }
 
     /// Called after order removal: drop the level bookkeeping if it emptied.
-    #[inline]
+    #[inline(always)]
     pub fn unlink_level(&mut self, price: Price) {
         match self {
             PriceIndex::Ladder(l) => l.unlink_level(price),
@@ -143,7 +152,7 @@ impl LadderIndex {
         (price - self.base) as usize
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn level_mut(&mut self, price: Price) -> Option<&mut Level> {
         let i = self.idx(price);
         self.levels.get_mut(i).filter(|l| !l.is_empty())
@@ -158,7 +167,7 @@ impl LadderIndex {
     /// Level for insert: sets the occupancy bit (idempotent — caller is about
     /// to make the level non-empty) and improves the cursor if this price
     /// beats it.
-    #[inline]
+    #[inline(always)]
     pub fn level_insert(&mut self, price: Price) -> &mut Level {
         let i = self.idx(price);
         let lvl = &mut self.levels[i];
@@ -180,7 +189,7 @@ impl LadderIndex {
 
     /// Clear bookkeeping for an emptied level; rescan the cursor only if it
     /// pointed at this level.
-    #[inline]
+    #[inline(always)]
     pub fn unlink_level(&mut self, price: Price) {
         let i = self.idx(price);
         if !self.levels[i].is_empty() {
