@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix: `Pipeline::stats()` panicked with `EgressPlacement::Inline` (it read a
+  per-partition outbox ring that does not exist there). Now 0 outbox depth, with a
+  regression test.
 - Vendors matcher-rust 5ab6488: resting orders live inline in 128-byte
   per-level chunks (`store.rs` replaces `pool.rs` and `level.rs`), the order
   map has a 1-byte tag array, and the hot path is `#[inline(always)]`. Core

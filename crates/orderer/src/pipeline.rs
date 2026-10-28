@@ -952,7 +952,11 @@ impl<C> Pipeline<C> {
                 st.partitions.push(crate::stats::PartitionStats {
                     partition: p as u32,
                     inbox_depth: depth(r.inboxes[p].published(), r.inboxes[p].consumed()),
-                    outbox_depth: depth(r.outboxes[p].published(), r.outboxes[p].consumed()),
+                    // inline egress has no outbox ring
+                    outbox_depth: r
+                        .outboxes
+                        .get(p)
+                        .map_or(0, |o| depth(o.published(), o.consumed())),
                     commands: c.commands.load(Ordering::Relaxed),
                     events: c.events.load(Ordering::Relaxed),
                     flushed_iseq: if self.shared.journal.is_some() {

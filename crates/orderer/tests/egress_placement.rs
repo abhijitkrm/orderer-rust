@@ -90,3 +90,23 @@ fn inline_egress_requires_journals_off() {
         Ok(_) => panic!("inline egress with journals must be refused"),
     }
 }
+
+#[test]
+fn inline_egress_has_stats_without_an_outbox() {
+    // stats() reads each partition's ring depths; inline egress has no outbox
+    let cfg = fuzz_cfg();
+    let cmds = fuzz_corpus(5, 2_000, 8);
+    let mut p = Pipeline::<FifoCore>::builder()
+        .book_config(cfg)
+        .partitions(3)
+        .egress_placement(EgressPlacement::Inline)
+        .build()
+        .unwrap();
+    p.publish_batch(&cmds).unwrap();
+    p.drain().unwrap();
+    let st = p.stats();
+    assert_eq!(st.partitions.len(), 3);
+    assert!(st.partitions.iter().all(|s| s.outbox_depth == 0));
+    assert_eq!(st.partitions.iter().map(|s| s.commands).sum::<u64>(), cmds.len() as u64);
+    p.shutdown().unwrap();
+}
