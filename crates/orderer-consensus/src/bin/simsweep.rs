@@ -32,13 +32,16 @@ fn main() {
             }
         }
     }
-    let (mut committed, mut elections, mut crashes) = (0usize, 0u64, 0u64);
+    let (mut committed, mut elections, mut crashes, mut compactions, mut installs) =
+        (0usize, 0u64, 0u64, 0u64, 0u64);
     for seed in start..start + seeds {
         match run(seed, &cfg) {
             Ok(r) => {
                 committed += r.committed;
                 elections += r.elections;
                 crashes += r.crashes;
+                compactions += r.compactions;
+                installs += r.snapshots_installed;
             }
             Err(e) => {
                 eprintln!("FAIL {e}");
@@ -47,7 +50,7 @@ fn main() {
         }
     }
     println!(
-        "ok: {seeds} seeds ({} nodes), {committed} entries committed, {elections} elections, {crashes} crashes",
+        "ok: {seeds} seeds ({} nodes), {committed} entries committed, {elections} elections, {crashes} crashes, {compactions} compactions, {installs} snapshots installed",
         cfg.nodes
     );
 }

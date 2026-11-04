@@ -52,6 +52,7 @@ pub fn figure8(m: Mutation) -> Index {
         term: 3,
         voted_for: None,
         log: vec![entry(1, "a"), entry(2, "b")],
+        ..Disk::default()
     };
     let mut n = Node::restart(0, vec![0, 1, 2, 3, 4], cfg, 1, disk);
 

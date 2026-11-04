@@ -13,7 +13,10 @@
   with and without pre-vote). Three deliberately broken variants
   (`--features mutations`) are all caught, and a directed test pins Raft's
   figure-8 rule (an old-term entry on a majority is not committed by counting;
-  the matching mutant is caught).
+  the matching mutant is caught). The core also compacts its log into snapshots
+  (`Node::compact`) and lagging nodes catch up by snapshot transfer
+  (`Effect::NeedSnapshot`, `Node::install_snapshot`); the simulator models both
+  (1,000 seeds: 22k compactions, 3k installs, clean).
 - Fix: `Pipeline::stats()` panicked with `EgressPlacement::Inline` (it read a
   per-partition outbox ring that does not exist there). Now 0 outbox depth, with a
   regression test.

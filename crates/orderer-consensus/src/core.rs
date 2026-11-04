@@ -76,6 +76,10 @@ pub struct Persist {
     pub voted_for: Option<NodeId>,
     pub from: Index,
     pub entries: Vec<Entry>,
+    /// First discard the log prefix up to and including this `(index, term)`
+    /// (a snapshot now covers it). The host stores the snapshot data itself,
+    /// **before** issuing this write.
+    pub compact: Option<(Index, Term)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,6 +98,20 @@ pub enum Effect {
     Rejected {
         leader: Option<NodeId>,
     },
+    /// `to` needs state the log no longer holds. The host should transfer its
+    /// stored snapshot at `index` (the log base) to `to`, which installs it
+    /// with [`Node::install_snapshot`].
+    NeedSnapshot {
+        to: NodeId,
+        index: Index,
+        term: Term,
+    },
+    /// Replace the state machine with the snapshot at `index`; applying
+    /// resumes at `index + 1`.
+    Restore {
+        index: Index,
+        term: Term,
+    },
 }
 
 /// What survives a crash.
@@ -101,7 +119,10 @@ pub enum Effect {
 pub struct Disk {
     pub term: Term,
     pub voted_for: Option<NodeId>,
+    /// Entries `base + 1 ..`; everything up to `base` is in the snapshot.
     pub log: Vec<Entry>,
+    pub base: Index,
+    pub base_term: Term,
 }
 
 impl Disk {
@@ -109,7 +130,15 @@ impl Disk {
     pub fn apply(&mut self, p: &Persist) {
         self.term = p.term;
         self.voted_for = p.voted_for;
-        let keep = (p.from - 1) as usize;
+        if let Some((i, t)) = p.compact {
+            let drop = (i.saturating_sub(self.base) as usize).min(self.log.len());
+            self.log.drain(..drop);
+            if i > self.base {
+                self.base = i;
+                self.base_term = t;
+            }
+        }
+        let keep = (p.from - 1 - self.base) as usize;
         if keep < self.log.len() {
             self.log.truncate(keep);
         }
@@ -180,7 +209,10 @@ pub struct Node {
 
     term: Term,
     voted_for: Option<NodeId>,
+    /// Entries `base + 1 ..`; `base`/`base_term` describe the snapshot.
     log: Vec<Entry>,
+    base: Index,
+    base_term: Term,
 
     role: Role,
     leader: Option<NodeId>,
@@ -198,6 +230,8 @@ pub struct Node {
     next_index: Vec<Index>,
     match_index: Vec<Index>,
     heard: Vec<bool>,
+    /// Ticks until a snapshot may be requested for the peer again.
+    snap_wait: Vec<u32>,
 
     election_elapsed: u32,
     election_timeout: u32,
@@ -220,7 +254,7 @@ impl Node {
             "node must be a member of its own cluster"
         );
         let n = peers.len();
-        let durable = disk.log.len() as Index;
+        let durable = disk.base + disk.log.len() as Index;
         let mut node = Node {
             id,
             peers,
@@ -229,10 +263,13 @@ impl Node {
             term: disk.term,
             voted_for: disk.voted_for,
             log: disk.log,
+            base: disk.base,
+            base_term: disk.base_term,
             role: Role::Follower,
             leader: None,
-            commit: 0,
-            applied: 0,
+            // The host restores the snapshot at `base` before replaying.
+            commit: disk.base,
+            applied: disk.base,
             durable,
             epoch: 0,
             writes: VecDeque::new(),
@@ -241,6 +278,7 @@ impl Node {
             next_index: vec![1; n],
             match_index: vec![0; n],
             heard: vec![false; n],
+            snap_wait: vec![0; n],
             election_elapsed: 0,
             election_timeout: 0,
             heartbeat_elapsed: 0,
@@ -268,8 +306,26 @@ impl Node {
     pub fn commit_index(&self) -> Index {
         self.commit
     }
+    /// Log entries from `base() + 1` on.
     pub fn log(&self) -> &[Entry] {
         &self.log
+    }
+    pub fn base(&self) -> Index {
+        self.base
+    }
+    pub fn last_index(&self) -> Index {
+        self.base + self.log.len() as Index
+    }
+    pub fn applied_index(&self) -> Index {
+        self.applied
+    }
+    /// Entry at absolute `index`, if still in the log.
+    pub fn entry_at(&self, index: Index) -> Option<&Entry> {
+        if index > self.base {
+            self.log.get((index - self.base - 1) as usize)
+        } else {
+            None
+        }
     }
     /// Set if the node detected a violated protocol invariant. The node
     /// keeps running; a harness should treat this as a failure.
@@ -283,6 +339,9 @@ impl Node {
     // ---- inputs ----------------------------------------------------------
 
     pub fn tick(&mut self) {
+        self.snap_wait
+            .iter_mut()
+            .for_each(|w| *w = w.saturating_sub(1));
         if self.role == Role::Leader {
             self.heartbeat_elapsed += 1;
             if self.heartbeat_elapsed >= self.cfg.heartbeat_ticks {
@@ -330,12 +389,79 @@ impl Node {
         self.broadcast_append();
     }
 
+    /// The host has stored a snapshot of the state after applying entries up
+    /// to `index` (which must be applied). Drops the log prefix it covers.
+    pub fn compact(&mut self, index: Index) {
+        if index <= self.base || index > self.applied {
+            self.fault = Some("compact outside (base, applied]");
+            return;
+        }
+        let term = self.term_at(index);
+        let drop = (index - self.base) as usize;
+        self.log.drain(..drop);
+        self.base = index;
+        self.base_term = term;
+        let from = self.last_index() + 1;
+        self.persist_with(from, Vec::new(), Some((index, term)));
+    }
+
+    /// The host received (and durably stored) the leader `from`'s snapshot
+    /// at `(index, last_term)`, sent in `term`. Emits [`Effect::Restore`] when
+    /// the state machine must be replaced.
+    pub fn install_snapshot(&mut self, from: NodeId, term: Term, index: Index, last_term: Term) {
+        if term < self.term {
+            return;
+        }
+        self.become_follower(term, Some(from));
+        let reply_term = self.term;
+        if index <= self.commit {
+            // Already covered by what we have committed.
+            let have = self.commit;
+            self.send_gated(
+                from,
+                Msg::AppendReply {
+                    term: reply_term,
+                    success: true,
+                    index: have,
+                },
+            );
+            return;
+        }
+        if index <= self.last_index() && self.term_at(index) == last_term {
+            // We hold the entry the snapshot ends at: keep the suffix.
+            let drop = (index - self.base) as usize;
+            self.log.drain(..drop);
+        } else {
+            self.log.clear();
+            self.durable = index;
+            self.epoch += 1;
+        }
+        self.base = index;
+        self.base_term = last_term;
+        self.commit = index;
+        self.applied = index;
+        let from_index = self.last_index() + 1;
+        self.persist_with(from_index, Vec::new(), Some((index, last_term)));
+        self.out.push(Effect::Restore {
+            index,
+            term: last_term,
+        });
+        self.send_gated(
+            from,
+            Msg::AppendReply {
+                term: reply_term,
+                success: true,
+                index,
+            },
+        );
+    }
+
     /// The disk finished the write with `token` (and all earlier ones).
     pub fn persisted(&mut self, token: u64) {
         while self.writes.front().is_some_and(|w| w.token <= token) {
             let w = self.writes.pop_front().expect("checked non-empty");
             if w.epoch == self.epoch {
-                self.durable = self.durable.max(w.upto).min(self.log.len() as Index);
+                self.durable = self.durable.max(w.upto).min(self.last_index());
             }
             self.out.extend(w.gated);
         }
@@ -385,19 +511,17 @@ impl Node {
         cfg!(feature = "mutations") && self.cfg.mutation == m
     }
 
-    fn last_index(&self) -> Index {
-        self.log.len() as Index
-    }
-
     fn last_term(&self) -> Term {
-        self.log.last().map_or(0, |e| e.term)
+        self.log.last().map_or(self.base_term, |e| e.term)
     }
 
+    /// Term of the entry at `index`; 0 for "before the log" and for indexes
+    /// that were compacted away (callers never ask about those).
     fn term_at(&self, index: Index) -> Term {
-        if index == 0 {
-            0
+        if index == self.base {
+            self.base_term
         } else {
-            self.log[index as usize - 1].term
+            self.entry_at(index).map_or(0, |e| e.term)
         }
     }
 
@@ -429,6 +553,10 @@ impl Node {
     }
 
     fn persist(&mut self, from: Index, entries: Vec<Entry>) {
+        self.persist_with(from, entries, None);
+    }
+
+    fn persist_with(&mut self, from: Index, entries: Vec<Entry>, compact: Option<(Index, Term)>) {
         let token = self.next_token;
         self.next_token += 1;
         let upto = from - 1 + entries.len() as Index;
@@ -444,6 +572,7 @@ impl Node {
             voted_for: self.voted_for,
             from,
             entries,
+            compact,
         }));
     }
 
@@ -456,7 +585,7 @@ impl Node {
         if index <= self.commit {
             self.fault = Some("truncating a committed entry");
         }
-        self.log.truncate(index as usize - 1);
+        self.log.truncate((index - self.base - 1) as usize);
         self.durable = self.durable.min(index - 1);
         self.epoch += 1;
     }
@@ -475,7 +604,10 @@ impl Node {
     fn apply_committed(&mut self) {
         while self.applied < self.commit {
             self.applied += 1;
-            let entry = self.log[self.applied as usize - 1].clone();
+            let entry = self
+                .entry_at(self.applied)
+                .expect("committed entry is in the log")
+                .clone();
             self.out.push(Effect::Apply {
                 index: self.applied,
                 entry,
@@ -661,8 +793,20 @@ impl Node {
     fn send_append(&mut self, to: NodeId) {
         let i = self.pos(to);
         let next = self.next_index[i].max(1);
+        if next <= self.base {
+            // The entries this peer needs are inside the snapshot.
+            if self.snap_wait[i] == 0 {
+                self.snap_wait[i] = self.cfg.election_ticks * 2;
+                self.out.push(Effect::NeedSnapshot {
+                    to,
+                    index: self.base,
+                    term: self.base_term,
+                });
+            }
+            return;
+        }
         let prev_index = next - 1;
-        let start = prev_index as usize;
+        let start = (prev_index - self.base) as usize;
         let end = self.log.len().min(start + self.cfg.max_batch);
         let entries = self.log[start..end].to_vec();
         let msg = Msg::Append {
@@ -697,6 +841,29 @@ impl Node {
         }
         // A current-term Append: `from` is the leader.
         self.become_follower(term, Some(from));
+
+        // Entries inside our snapshot are committed, hence identical.
+        let (mut prev_index, mut prev_term, mut entries) = (prev_index, prev_term, entries);
+        if prev_index < self.base {
+            let skip = ((self.base - prev_index) as usize).min(entries.len());
+            entries.drain(..skip);
+            prev_index += skip as Index;
+            if prev_index < self.base {
+                // Everything sent is already covered; just confirm our base.
+                let term = self.term;
+                let index = self.base;
+                self.send_gated(
+                    from,
+                    Msg::AppendReply {
+                        term,
+                        success: true,
+                        index,
+                    },
+                );
+                return;
+            }
+            prev_term = self.base_term;
+        }
 
         if prev_index > self.last_index() || self.term_at(prev_index) != prev_term {
             let hint = self.last_index().min(prev_index.saturating_sub(1));

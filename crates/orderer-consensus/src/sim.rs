@@ -3,9 +3,10 @@
 //! A single thread drives N [`Node`]s over a simulated network and disk with
 //! a seeded PRNG controlling message loss, duplication, reordering and
 //! delay, network partitions, node crashes with torn disk tails, and slow
-//! fsync. After every step it checks the protocol's safety properties. A
-//! failure returns the seed and tick, and re-running that seed reproduces it
-//! exactly.
+//! fsync. Nodes compact their logs into snapshots and lagging nodes catch up
+//! by snapshot transfer over the same lossy network. After every step the
+//! simulator checks the protocol's safety properties. A failure returns the
+//! seed and tick, and re-running that seed reproduces it exactly.
 
 use crate::core::*;
 use crate::rng::Rng;
@@ -28,6 +29,9 @@ pub struct SimConfig {
     pub propose_permille: u32,
     /// Network partitions are reshuffled this often (0 = never).
     pub partition_every: u64,
+    /// A node snapshots and compacts once it has applied this many entries
+    /// past its log base (0 = never compact).
+    pub compact_every: u64,
     pub node_cfg: Config,
 }
 
@@ -44,6 +48,7 @@ impl Default for SimConfig {
             crash_permille: 4,
             propose_permille: 300,
             partition_every: 150,
+            compact_every: 40,
             node_cfg: Config::default(),
         }
     }
@@ -56,12 +61,27 @@ pub struct Report {
     pub crashes: u64,
     pub proposals: u64,
     pub max_term: Term,
+    pub compactions: u64,
+    pub snapshots_installed: u64,
 }
 
 struct SimDisk {
     disk: Disk,
     pending: VecDeque<(u64, Persist)>,
     last_done: u64,
+    /// Snapshots by index. Written atomically, survive crashes.
+    snaps: BTreeMap<Index, Vec<Entry>>,
+}
+
+#[derive(Clone, Debug)]
+enum Wire {
+    Raft(Msg),
+    Snap {
+        term: Term,
+        index: Index,
+        last_term: Term,
+        data: Vec<Entry>,
+    },
 }
 
 struct Sim {
@@ -71,8 +91,10 @@ struct Sim {
     now: u64,
     nodes: Vec<Option<Node>>,
     disks: Vec<SimDisk>,
+    /// Each node's state machine: the applied entries, in order.
+    state: Vec<Vec<Entry>>,
     down_until: Vec<u64>,
-    net: BTreeMap<(u64, u64), (NodeId, NodeId, Msg)>,
+    net: BTreeMap<(u64, u64), (NodeId, NodeId, Wire)>,
     net_seq: u64,
     /// `blocked[from][to]`
     blocked: Vec<Vec<bool>>,
@@ -104,8 +126,10 @@ pub fn run(seed: u64, cfg: &SimConfig) -> Result<Report, String> {
                 disk: Disk::default(),
                 pending: VecDeque::new(),
                 last_done: 0,
+                snaps: BTreeMap::new(),
             })
             .collect(),
+        state: vec![Vec::new(); n],
         down_until: vec![0; n],
         net: BTreeMap::new(),
         net_seq: 0,
@@ -139,7 +163,7 @@ pub fn run(seed: u64, cfg: &SimConfig) -> Result<Report, String> {
     sim.blocked = vec![vec![false; n]; n];
     for i in 0..n {
         if sim.nodes[i].is_none() {
-            sim.restart(i);
+            sim.restart(i).map_err(|e| sim.fail(&e))?;
         }
     }
     let quiet_from = sim.now + cfg.heal_ticks.saturating_sub(400);
@@ -167,7 +191,7 @@ impl Sim {
         if self.chaos {
             self.inject_faults();
         }
-        self.restart_due();
+        self.restart_due()?;
         self.complete_disk()?;
         self.deliver_net()?;
         for i in 0..self.nodes.len() {
@@ -175,6 +199,7 @@ impl Sim {
                 n.tick();
                 self.drain(i)?;
             }
+            self.maybe_compact(i)?;
         }
         if propose && self.rng.permille(self.cfg.propose_permille) {
             self.propose();
@@ -219,6 +244,7 @@ impl Sim {
     fn crash(&mut self, i: usize) {
         self.report.crashes += 1;
         self.nodes[i] = None;
+        self.state[i].clear();
         self.applied_len[i] = 0;
         // Writes are atomic and in order, so a crash leaves a prefix of the
         // ones in flight: that is the torn tail.
@@ -230,17 +256,33 @@ impl Sim {
         self.down_until[i] = self.now + 5 + self.rng.below(80);
     }
 
-    fn restart_due(&mut self) {
+    fn restart_due(&mut self) -> R {
         for i in 0..self.nodes.len() {
             if self.nodes[i].is_none() && self.down_until[i] <= self.now {
-                self.restart(i);
+                self.restart(i)?;
             }
         }
+        Ok(())
     }
 
-    fn restart(&mut self, i: usize) {
+    fn restart(&mut self, i: usize) -> R {
         let peers: Vec<NodeId> = (0..self.nodes.len() as NodeId).collect();
         let seed = self.rng.next_u64();
+        let base = self.disks[i].disk.base;
+        // The state machine comes back from the snapshot at the log base.
+        if base == 0 {
+            self.state[i].clear();
+        } else {
+            match self.disks[i].snaps.get(&base) {
+                Some(s) => self.state[i] = s.clone(),
+                None => {
+                    return Err(format!(
+                        "node {i} restarted with log base {base} but no snapshot for it"
+                    ))
+                }
+            }
+        }
+        self.applied_len[i] = base;
         self.disks[i].last_done = self.now;
         self.nodes[i] = Some(Node::restart(
             i as NodeId,
@@ -249,6 +291,7 @@ impl Sim {
             seed,
             self.disks[i].disk.clone(),
         ));
+        Ok(())
     }
 
     // ---- environment -----------------------------------------------------
@@ -283,16 +326,35 @@ impl Sim {
                 Some(&k) if k.0 <= self.now => k,
                 _ => return Ok(()),
             };
-            let (from, to, msg) = self.net.remove(&key).expect("key just seen");
+            let (from, to, wire) = self.net.remove(&key).expect("key just seen");
             let t = to as usize;
-            if let Some(n) = self.nodes[t].as_mut() {
-                n.step(from, msg);
-                self.drain(t)?;
+            if self.nodes[t].is_none() {
+                continue;
             }
+            match wire {
+                Wire::Raft(msg) => {
+                    if let Some(n) = self.nodes[t].as_mut() {
+                        n.step(from, msg);
+                    }
+                }
+                Wire::Snap {
+                    term,
+                    index,
+                    last_term,
+                    data,
+                } => {
+                    // The receiving host stores the snapshot durably first.
+                    self.disks[t].snaps.insert(index, data);
+                    if let Some(n) = self.nodes[t].as_mut() {
+                        n.install_snapshot(from, term, index, last_term);
+                    }
+                }
+            }
+            self.drain(t)?;
         }
     }
 
-    fn send(&mut self, from: NodeId, to: NodeId, msg: Msg) {
+    fn send(&mut self, from: NodeId, to: NodeId, wire: Wire) {
         if self.blocked[from as usize][to as usize] {
             return;
         }
@@ -307,7 +369,8 @@ impl Sim {
         for _ in 0..copies {
             let at = self.now + 1 + self.rng.below(self.cfg.max_delay);
             self.net_seq += 1;
-            self.net.insert((at, self.net_seq), (from, to, msg.clone()));
+            self.net
+                .insert((at, self.net_seq), (from, to, wire.clone()));
         }
     }
 
@@ -318,7 +381,7 @@ impl Sim {
         };
         for e in effects {
             match e {
-                Effect::Send { to, msg } => self.send(i as NodeId, to, msg),
+                Effect::Send { to, msg } => self.send(i as NodeId, to, Wire::Raft(msg)),
                 Effect::Persist(p) => {
                     let d = &mut self.disks[i];
                     let done = d
@@ -329,9 +392,48 @@ impl Sim {
                 }
                 Effect::Apply { index, entry } => self.on_apply(i, index, entry)?,
                 Effect::Rejected { .. } => {}
+                Effect::NeedSnapshot { to, index, term } => {
+                    let Some(data) = self.disks[i].snaps.get(&index).cloned() else {
+                        return Err(format!(
+                            "node {i} asked to send snapshot {index} it does not hold"
+                        ));
+                    };
+                    let leader_term = self.nodes[i].as_ref().map_or(0, |n| n.term());
+                    self.send(
+                        i as NodeId,
+                        to,
+                        Wire::Snap {
+                            term: leader_term,
+                            index,
+                            last_term: term,
+                            data,
+                        },
+                    );
+                }
+                Effect::Restore { index, .. } => self.on_restore(i, index)?,
             }
         }
         Ok(())
+    }
+
+    fn maybe_compact(&mut self, i: usize) -> R {
+        if self.cfg.compact_every == 0 {
+            return Ok(());
+        }
+        let Some(n) = self.nodes[i].as_mut() else {
+            return Ok(());
+        };
+        let applied = n.applied_index();
+        if applied.saturating_sub(n.base())
+            < self.cfg.compact_every + self.rng.below(self.cfg.compact_every)
+        {
+            return Ok(());
+        }
+        // Snapshot first, then let the node drop the prefix it covers.
+        self.disks[i].snaps.insert(applied, self.state[i].clone());
+        n.compact(applied);
+        self.report.compactions += 1;
+        self.drain(i)
     }
 
     fn propose(&mut self) {
@@ -364,6 +466,7 @@ impl Sim {
             ));
         }
         self.applied_len[i] = index;
+        self.state[i].push(entry.clone());
         match self.global.get(index as usize - 1) {
             Some(g) if *g == entry => {}
             Some(g) => {
@@ -394,6 +497,25 @@ impl Sim {
         Ok(())
     }
 
+    /// The node replaced its state machine with a snapshot.
+    fn on_restore(&mut self, i: usize, index: Index) -> R {
+        let Some(data) = self.disks[i].snaps.get(&index) else {
+            return Err(format!(
+                "node {i} told to restore snapshot {index} it does not hold"
+            ));
+        };
+        if data.len() as Index != index {
+            return Err(format!("snapshot {index} holds {} entries", data.len()));
+        }
+        if index as usize > self.global.len() || data[..] != self.global[..index as usize] {
+            return Err(format!("snapshot {index} is not a committed prefix"));
+        }
+        self.state[i] = data.clone();
+        self.applied_len[i] = index;
+        self.report.snapshots_installed += 1;
+        Ok(())
+    }
+
     fn check(&mut self) -> R {
         for i in 0..self.nodes.len() {
             let Some(n) = self.nodes[i].as_ref() else {
@@ -413,15 +535,21 @@ impl Sim {
                 None => {
                     // Leader completeness: a new leader holds every entry
                     // already committed.
-                    let log = n.log();
-                    if log.len() < self.global.len() || log[..self.global.len()] != self.global[..]
-                    {
+                    let committed = self.global.len() as Index;
+                    if n.last_index() < committed {
                         return Err(format!(
-                            "leader {i} of term {} lacks committed entries (log {}, committed {})",
+                            "leader {i} of term {} lacks committed entries (last {}, committed {committed})",
                             n.term(),
-                            log.len(),
-                            self.global.len()
+                            n.last_index(),
                         ));
+                    }
+                    for idx in n.base() + 1..=committed {
+                        if n.entry_at(idx) != Some(&self.global[idx as usize - 1]) {
+                            return Err(format!(
+                                "leader {i} of term {} disagrees on committed entry {idx}",
+                                n.term()
+                            ));
+                        }
                     }
                     self.leaders.insert(n.term(), i as NodeId);
                     self.report.elections += 1;
@@ -436,22 +564,25 @@ impl Sim {
     }
 
     fn log_matching(&self) -> R {
-        let logs: Vec<(usize, &[Entry])> = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(i, n)| n.as_ref().map(|n| (i, n.log())))
-            .collect();
-        for (x, &(a, la)) in logs.iter().enumerate() {
-            for &(b, lb) in &logs[x + 1..] {
-                let m = la.len().min(lb.len());
-                if let Some(k) = (0..m).rev().find(|&k| la[k].term == lb[k].term) {
-                    if la[..=k] != lb[..=k] {
-                        return Err(format!(
-                            "log matching violated between nodes {a} and {b} at index {}",
-                            k + 1
-                        ));
-                    }
+        let live: Vec<&Node> = self.nodes.iter().flatten().collect();
+        for (x, a) in live.iter().enumerate() {
+            for b in &live[x + 1..] {
+                let lo = a.base().max(b.base());
+                let hi = a.last_index().min(b.last_index());
+                // Highest index both hold with the same term...
+                let Some(k) = (lo + 1..=hi)
+                    .rev()
+                    .find(|&k| a.entry_at(k).map(|e| e.term) == b.entry_at(k).map(|e| e.term))
+                else {
+                    continue;
+                };
+                // ...must be preceded by identical logs.
+                if (lo + 1..=k).any(|j| a.entry_at(j) != b.entry_at(j)) {
+                    return Err(format!(
+                        "log matching violated between nodes {} and {} at index {k}",
+                        a.id(),
+                        b.id()
+                    ));
                 }
             }
         }
@@ -474,11 +605,17 @@ impl Sim {
                 self.global.len()
             ));
         }
-        for (i, &len) in self.applied_len.iter().enumerate() {
-            if len as usize != self.global.len() {
+        for i in 0..self.nodes.len() {
+            if self.applied_len[i] as usize != self.global.len() {
                 return Err(format!(
-                    "node {i} applied {len} of {} committed entries after healing",
+                    "node {i} applied {} of {} committed entries after healing",
+                    self.applied_len[i],
                     self.global.len()
+                ));
+            }
+            if self.state[i] != self.global {
+                return Err(format!(
+                    "node {i} state machine differs from the committed sequence"
                 ));
             }
         }
