@@ -1,0 +1,156 @@
+//! orderer-node — one replica of a replicated orderer cluster, as a process.
+//!
+//!   orderer-node --id N --members 0=HOST:PORT,1=HOST:PORT,... --client HOST:PORT
+//!                --dir DIR [--partitions P] [--compact-every N] [--digest-every N]
+//!                [--fsync on|off] [--audit]
+//!
+//! `--audit` appends `(log index, first order id)` for every applied batch to
+//! `DIR/applied.log` (truncated at start, so it reflects this incarnation's
+//! replay), which `orderer-load verify` checks after a failover run.
+
+use orderer::{Metrics, PartitionMap, Pipeline};
+use orderer_cluster::client::ClientServer;
+use orderer_cluster::codec::decode_batch;
+use orderer_cluster::pipeline_sm::PipelineSm;
+use orderer_cluster::{Replica, ReplicaConfig, StateMachine};
+use orderer_consensus::{Entry, Index, NodeId};
+use orderer_core::*;
+use std::fs::File;
+use std::io::Write;
+use std::net::SocketAddr;
+use std::process::exit;
+
+fn die(msg: &str) -> ! {
+    eprintln!("orderer-node: {msg}");
+    exit(2)
+}
+
+struct Audited<S: StateMachine> {
+    inner: S,
+    log: Option<File>,
+}
+
+impl<S: StateMachine> StateMachine for Audited<S> {
+    fn apply(&mut self, index: Index, entry: &Entry) {
+        if let Some(f) = self.log.as_mut() {
+            if let Ok(cmds) = decode_batch(&entry.data) {
+                if let Some((_, c)) = cmds.first() {
+                    let id = match c {
+                        Command::New { order_id, .. }
+                        | Command::Cancel { order_id }
+                        | Command::Replace { order_id, .. } => *order_id,
+                    };
+                    let mut rec = [0u8; 16];
+                    rec[..8].copy_from_slice(&index.to_le_bytes());
+                    rec[8..].copy_from_slice(&id.to_le_bytes());
+                    // Straight to the OS: survives kill -9 of this process.
+                    let _ = f.write_all(&rec);
+                }
+            }
+        }
+        self.inner.apply(index, entry);
+    }
+    fn snapshot(&mut self, index: Index) -> Vec<u8> {
+        self.inner.snapshot(index)
+    }
+    fn restore(&mut self, index: Index, data: &[u8]) -> Result<(), String> {
+        self.inner.restore(index, data)
+    }
+    fn digest(&mut self, index: Index) -> Option<[u8; 32]> {
+        self.inner.digest(index)
+    }
+}
+
+fn main() {
+    let (mut id, mut members, mut client, mut dir) = (
+        None::<NodeId>,
+        Vec::new(),
+        None::<SocketAddr>,
+        String::new(),
+    );
+    let (mut partitions, mut compact_every, mut digest_every, mut fsync, mut audit) =
+        (2u32, 0u64, 0u64, true, false);
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        let mut v = |n: &str| {
+            args.next()
+                .unwrap_or_else(|| die(&format!("{n} needs a value")))
+        };
+        match a.as_str() {
+            "--id" => id = Some(v("--id").parse().unwrap_or_else(|_| die("--id"))),
+            "--members" => {
+                for m in v("--members").split(',') {
+                    let (i, addr) = m
+                        .split_once('=')
+                        .unwrap_or_else(|| die("--members wants ID=HOST:PORT,..."));
+                    members.push((
+                        i.parse::<NodeId>().unwrap_or_else(|_| die("member id")),
+                        addr.parse::<SocketAddr>()
+                            .unwrap_or_else(|_| die("member address")),
+                    ));
+                }
+            }
+            "--client" => client = Some(v("--client").parse().unwrap_or_else(|_| die("--client"))),
+            "--dir" => dir = v("--dir"),
+            "--partitions" => {
+                partitions = v("--partitions")
+                    .parse()
+                    .unwrap_or_else(|_| die("--partitions"))
+            }
+            "--compact-every" => {
+                compact_every = v("--compact-every")
+                    .parse()
+                    .unwrap_or_else(|_| die("--compact-every"))
+            }
+            "--digest-every" => {
+                digest_every = v("--digest-every")
+                    .parse()
+                    .unwrap_or_else(|_| die("--digest-every"))
+            }
+            "--fsync" => fsync = v("--fsync") == "on",
+            "--audit" => audit = true,
+            other => die(&format!("unknown argument {other}")),
+        }
+    }
+    let id = id.unwrap_or_else(|| die("--id is required"));
+    let client = client.unwrap_or_else(|| die("--client is required"));
+    if members.is_empty() || dir.is_empty() {
+        die("--members and --dir are required");
+    }
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(&format!("{dir}: {e}")));
+
+    let mut cfg = ReplicaConfig::new(id, members, format!("{dir}/state"));
+    cfg.fsync = fsync;
+    cfg.compact_every = compact_every;
+    cfg.digest_every = digest_every;
+    cfg.max_pending = 1 << 16;
+    let log = audit.then(|| {
+        File::create(format!("{dir}/applied.log"))
+            .unwrap_or_else(|e| die(&format!("audit log: {e}")))
+    });
+    let sm = Audited {
+        inner: PipelineSm::<FifoCore>::new(
+            BookConfig::default(),
+            PartitionMap::hash(partitions).unwrap_or_else(|e| die(&e.to_string())),
+            move |init| {
+                let (c, _h) = Metrics::new(0);
+                let mut b = Pipeline::<FifoCore>::builder()
+                    .partitions(partitions)
+                    .egress(c)
+                    .timestamps(false);
+                if let Some(i) = init {
+                    b = b.initial(i);
+                }
+                b.build().expect("pipeline")
+            },
+        ),
+        log,
+    };
+    let replica = Replica::start(cfg, sm).unwrap_or_else(|e| die(&format!("start: {e}")));
+    let _server = ClientServer::start(client, replica.handle())
+        .unwrap_or_else(|e| die(&format!("client port: {e}")));
+    println!("orderer-node {id} ready (client port {client})");
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
+}

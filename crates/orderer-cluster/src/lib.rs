@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod client;
 pub mod codec;
 pub mod pipeline_sm;
 pub mod replica;

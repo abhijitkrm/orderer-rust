@@ -26,6 +26,8 @@ const MAGIC: &[u8; 8] = b"ORDWAL\0\x01";
 const FRAME_HEAD: usize = 8;
 /// A frame body larger than this is treated as garbage, not allocated.
 const MAX_FRAME: usize = 256 << 20;
+/// term u32, vote u8, compact flag u8, from u64, entry count u32.
+const MIN_BODY: usize = 4 + 1 + 1 + 8 + 4;
 
 #[derive(Debug)]
 pub enum WalError {
@@ -89,7 +91,11 @@ fn frame_at(data: &[u8], off: usize) -> Option<(&[u8], usize)> {
     let head = data.get(off..off + FRAME_HEAD)?;
     let len = u32::from_le_bytes(head[..4].try_into().expect("4")) as usize;
     let crc = u32::from_le_bytes(head[4..8].try_into().expect("4"));
-    if len > MAX_FRAME {
+    // A real body is never shorter than the fixed fields of a write. This
+    // also rejects zeros: a SIGKILL during an append can leave the file
+    // extended with zero bytes, and an all-zero header (length 0, checksum 0)
+    // would otherwise pass as a valid empty frame.
+    if !(MIN_BODY..=MAX_FRAME).contains(&len) {
         return None;
     }
     let body = data.get(off + FRAME_HEAD..off + FRAME_HEAD + len)?;
@@ -150,7 +156,7 @@ fn fits(disk: &Disk, p: &Persist) -> bool {
 fn valid_frame_follows(data: &[u8], bad: usize) -> bool {
     if let Some(head) = data.get(bad..bad + FRAME_HEAD) {
         let len = u32::from_le_bytes(head[..4].try_into().expect("4")) as usize;
-        if len <= MAX_FRAME {
+        if (MIN_BODY..=MAX_FRAME).contains(&len) {
             let next = bad + FRAME_HEAD + len;
             if next < data.len() && frame_at(data, next).is_some() {
                 return true;
@@ -407,6 +413,57 @@ mod tests {
             (disk.log.len(), rep.frames > 0, rep.torn_bytes > 0),
             (3, true, true)
         );
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn a_zero_filled_tail_is_a_tear_not_corruption() {
+        // SIGKILL during an append can leave the file extended with zeros.
+        for zeros in [1usize, 7, 8, 20, 4096, 3285, 70_000, 2 << 20] {
+            let d = tmp(&format!("zeros-{zeros}"));
+            let (mut wal, _, _) = Wal::open(&d).unwrap();
+            for i in 0..5u64 {
+                wal.append(&w(i + 1, vec![e(1, i as u8)], 1));
+            }
+            wal.sync().unwrap();
+            drop(wal);
+            let mut f = OpenOptions::new()
+                .append(true)
+                .open(d.join("raft.wal"))
+                .unwrap();
+            f.write_all(&vec![0u8; zeros]).unwrap();
+            drop(f);
+            let (mut wal, disk, rep) =
+                Wal::open(&d).unwrap_or_else(|e| panic!("{zeros} zero bytes: {e}"));
+            assert_eq!(
+                (disk.log.len(), rep.torn_bytes),
+                (5, zeros as u64),
+                "{zeros} zero bytes"
+            );
+            // And it keeps working: the next append lands cleanly after the cut.
+            wal.append(&w(6, vec![e(1, 9)], 1));
+            wal.sync().unwrap();
+            drop(wal);
+            let (_, disk, rep) = Wal::open(&d).unwrap();
+            assert_eq!((disk.log.len(), rep.torn_bytes), (6, 0));
+            fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    #[test]
+    fn zeros_in_the_middle_with_valid_frames_after_are_corruption() {
+        let d = tmp("zero-mid");
+        let (mut wal, _, _) = Wal::open(&d).unwrap();
+        for i in 0..6u64 {
+            wal.append(&w(i + 1, vec![e(1, i as u8)], 1));
+        }
+        wal.sync().unwrap();
+        drop(wal);
+        let mut data = fs::read(d.join("raft.wal")).unwrap();
+        let at = MAGIC.len() + 2 * (FRAME_HEAD + 60);
+        data[at..at + 30].fill(0);
+        fs::write(d.join("raft.wal"), data).unwrap();
+        assert!(matches!(Wal::open(&d), Err(WalError::Corrupt { .. })));
         fs::remove_dir_all(d).unwrap();
     }
 

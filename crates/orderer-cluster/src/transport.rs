@@ -447,6 +447,9 @@ fn reader(
     stats: Arc<NetStats>,
     stop: Arc<AtomicBool>,
 ) -> io::Result<()> {
+    // Accepted from a non-blocking listener: blocking mode is not inherited
+    // everywhere (macOS), and a non-blocking reader would spin.
+    conn.set_nonblocking(false)?;
     conn.set_nodelay(true)?;
     conn.set_read_timeout(Some(Duration::from_millis(100)))?;
     let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_string());
