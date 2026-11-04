@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `wirefix`: writes wire-format fixtures (messages, WAL frame bodies, command
+  batches, WAL files in every damaged state with their expected recovery, and
+  snapshots) from the Rust codec, WAL and snapshot store, for ports of the
+  replication runtime (`orderer/vectors/replication-wire/`).
 - Conformance traces for the replication protocol core: `orderer_consensus::trace`
   (a text format, formatter and `replay`), `SimConfig::record` to record every
   node's inputs and outputs from the simulator, and the `tracegen` binary that
