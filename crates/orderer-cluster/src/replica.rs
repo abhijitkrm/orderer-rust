@@ -640,7 +640,13 @@ impl Driver {
                 term,
                 index,
                 last_term,
-            }) => self.node.install_snapshot(from, term, index, last_term),
+            }) => {
+                eprintln!(
+                    "orderer-cluster node {}: installing snapshot {index} from node {from}",
+                    self.cfg.id
+                );
+                self.node.install_snapshot(from, term, index, last_term)
+            }
             Event::Inbound(Inbound::Digest {
                 from,
                 index,

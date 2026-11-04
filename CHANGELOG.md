@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The replica logs `installing snapshot N from node K` when it accepts a snapshot, so mixed-language runs can count transfers by language pair.
 - `wirefix`: writes wire-format fixtures (messages, WAL frame bodies, command
   batches, WAL files in every damaged state with their expected recovery, and
   snapshots) from the Rust codec, WAL and snapshot store, for ports of the
