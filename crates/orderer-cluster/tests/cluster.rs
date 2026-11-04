@@ -382,9 +382,10 @@ fn state_divergence_halts_the_odd_node_out() {
         },
     );
     c.wait_leader(Duration::from_secs(5));
-    for i in 0..200 {
-        c.propose(&payload(i)).unwrap();
-    }
+    // If the corrupted node happens to lead, it halts itself mid-run and
+    // proposals in flight to it have no definite answer; the majority carries on.
+    let acked = (0..200).filter(|&i| c.propose(&payload(i)).is_ok()).count();
+    assert!(acked >= 150, "only {acked} of 200 acknowledged");
     let end = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(why) = c.handle(2).unwrap().status().halted {
