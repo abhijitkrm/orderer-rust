@@ -9,6 +9,7 @@ pub mod codec;
 pub mod pipeline_sm;
 pub mod replica;
 pub mod sha256;
+pub mod shard;
 pub mod snapstore;
 pub mod transport;
 pub mod wal;

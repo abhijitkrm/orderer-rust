@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- New crate `orderer-cluster`: the replicated engine around `orderer-consensus`
+  (spec/REPLICATION.md §13). CRC-checked WAL with torn-tail and zero-tail
+  recovery that refuses to start on mid-file damage, atomic snapshot store,
+  TCP transport with chunked snapshot streaming, replica runtime with a
+  separate applier thread (acknowledge at commit, backlog back-pressure),
+  state-digest divergence detection, a leader-following client protocol,
+  `PipelineSm` (the matching pipeline as the replicated state machine),
+  sharding across independent groups, and the binaries `orderer-node`,
+  `orderer-load` and `clusterbench`. `scripts/failover.sh` kill -9s the leader
+  of three real processes under load and verifies nothing acknowledged is lost.
+- `orderer`: `journal::crc32c` is now slicing-by-8 (388 -> 1,678 MB/s), with
+  `crc32c_update` for incremental use, and the optional `hwcrc` feature
+  (ARMv8 CRC / SSE4.2 behind runtime detection, 5.3 GB/s) is the third
+  sanctioned `unsafe` site.
 - New crate `orderer-consensus` (R-B of `spec/REPLICATION.md`, draft): the
   replicated-log protocol as a pure state machine (Raft-style elections with
   pre-vote, check-quorum, commit-gated apply) plus a deterministic cluster
