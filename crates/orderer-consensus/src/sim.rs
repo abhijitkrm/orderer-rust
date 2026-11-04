@@ -10,6 +10,7 @@
 
 use crate::core::*;
 use crate::rng::Rng;
+use crate::trace::{fmt_effect, fmt_msg, fmt_node_line, fmt_state, hex};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 #[derive(Clone, Debug)]
@@ -32,6 +33,9 @@ pub struct SimConfig {
     /// A node snapshots and compacts once it has applied this many entries
     /// past its log base (0 = never compact).
     pub compact_every: u64,
+    /// Record every node's inputs and outputs as conformance traces
+    /// (`Report::traces`).
+    pub record: bool,
     pub node_cfg: Config,
 }
 
@@ -49,6 +53,7 @@ impl Default for SimConfig {
             propose_permille: 300,
             partition_every: 150,
             compact_every: 40,
+            record: false,
             node_cfg: Config::default(),
         }
     }
@@ -63,6 +68,8 @@ pub struct Report {
     pub max_term: Term,
     pub compactions: u64,
     pub snapshots_installed: u64,
+    /// One trace per node (see `trace.rs`), when `SimConfig::record` is set.
+    pub traces: Vec<String>,
 }
 
 struct SimDisk {
@@ -85,6 +92,8 @@ enum Wire {
 }
 
 struct Sim {
+    /// Per-node recorded trace lines.
+    tr: Vec<Vec<String>>,
     cfg: SimConfig,
     seed: u64,
     rng: Rng,
@@ -142,14 +151,20 @@ pub fn run(seed: u64, cfg: &SimConfig) -> Result<Report, String> {
         next_id: 1,
         chaos: true,
         report: Report::default(),
+        tr: vec![Vec::new(); n],
     };
     for i in 0..n {
-        let node = Node::new(
-            i as NodeId,
-            peers.clone(),
-            cfg.node_cfg.clone(),
-            seed.wrapping_add(i as u64),
-        );
+        let node_seed = seed.wrapping_add(i as u64);
+        let node = Node::new(i as NodeId, peers.clone(), cfg.node_cfg.clone(), node_seed);
+        if cfg.record {
+            sim.tr[i].push(fmt_node_line(
+                i as NodeId,
+                &peers,
+                &cfg.node_cfg,
+                node_seed,
+                &Disk::default(),
+            ));
+        }
         sim.nodes.push(Some(node));
     }
 
@@ -174,10 +189,17 @@ pub fn run(seed: u64, cfg: &SimConfig) -> Result<Report, String> {
 
     sim.converged(chaos_committed).map_err(|e| sim.fail(&e))?;
     sim.report.committed = sim.global.len();
+    sim.report.traces = sim.tr.iter().map(|v| v.join("\n")).collect();
     Ok(sim.report)
 }
 
 impl Sim {
+    fn rec(&mut self, i: usize, line: String) {
+        if self.cfg.record {
+            self.tr[i].push(line);
+        }
+    }
+
     fn fail(&self, msg: &str) -> String {
         format!("seed {} tick {}: {}", self.seed, self.now, msg)
     }
@@ -195,8 +217,9 @@ impl Sim {
         self.complete_disk()?;
         self.deliver_net()?;
         for i in 0..self.nodes.len() {
-            if let Some(n) = self.nodes[i].as_mut() {
-                n.tick();
+            let ticked = self.nodes[i].as_mut().map(|n| n.tick()).is_some();
+            if ticked {
+                self.rec(i, "in tick".into());
                 self.drain(i)?;
             }
             self.maybe_compact(i)?;
@@ -284,12 +307,17 @@ impl Sim {
         }
         self.applied_len[i] = base;
         self.disks[i].last_done = self.now;
+        let disk = self.disks[i].disk.clone();
+        if self.cfg.record {
+            let line = fmt_node_line(i as NodeId, &peers, &self.cfg.node_cfg, seed, &disk);
+            self.tr[i].push(line);
+        }
         self.nodes[i] = Some(Node::restart(
             i as NodeId,
             peers,
             self.cfg.node_cfg.clone(),
             seed,
-            self.disks[i].disk.clone(),
+            disk,
         ));
         Ok(())
     }
@@ -314,6 +342,7 @@ impl Sim {
                 if let Some(n) = self.nodes[i].as_mut() {
                     n.persisted(p.token);
                 }
+                self.rec(i, format!("in persisted {}", p.token));
                 self.drain(i)?;
             }
         }
@@ -333,9 +362,11 @@ impl Sim {
             }
             match wire {
                 Wire::Raft(msg) => {
+                    let line = format!("in step {from} {}", fmt_msg(&msg));
                     if let Some(n) = self.nodes[t].as_mut() {
                         n.step(from, msg);
                     }
+                    self.rec(t, line);
                 }
                 Wire::Snap {
                     term,
@@ -348,6 +379,7 @@ impl Sim {
                     if let Some(n) = self.nodes[t].as_mut() {
                         n.install_snapshot(from, term, index, last_term);
                     }
+                    self.rec(t, format!("in install {from} {term} {index} {last_term}"));
                 }
             }
             self.drain(t)?;
@@ -375,10 +407,16 @@ impl Sim {
     }
 
     fn drain(&mut self, i: usize) -> R {
-        let effects = match self.nodes[i].as_mut() {
-            Some(n) => n.take_effects(),
+        let (effects, state_line) = match self.nodes[i].as_mut() {
+            Some(n) => (n.take_effects(), self.cfg.record.then(|| fmt_state(n))),
             None => return Ok(()),
         };
+        if let Some(state) = state_line {
+            for e in &effects {
+                self.tr[i].push(format!("out {}", fmt_effect(e)));
+            }
+            self.tr[i].push(state);
+        }
         for e in effects {
             match e {
                 Effect::Send { to, msg } => self.send(i as NodeId, to, Wire::Raft(msg)),
@@ -432,6 +470,7 @@ impl Sim {
         self.disks[i].snaps.insert(applied, self.state[i].clone());
         n.compact(applied);
         self.report.compactions += 1;
+        self.rec(i, format!("in compact {applied}"));
         self.drain(i)
     }
 
@@ -449,10 +488,17 @@ impl Sim {
         // offered gets committed.
         self.proposed.insert(id);
         self.report.proposals += 1;
+        let data = id.to_le_bytes().to_vec();
+        self.rec(i, format!("in propose {}", hex(&data)));
+        let mut replicated = false;
         if let Some(n) = self.nodes[i].as_mut() {
-            if n.propose(id.to_le_bytes().to_vec()).is_ok() {
+            if n.propose(data).is_ok() {
                 n.replicate();
+                replicated = true;
             }
+        }
+        if replicated {
+            self.rec(i, "in replicate".into());
         }
         let _ = self.drain(i);
     }

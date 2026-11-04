@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Conformance traces for the replication protocol core: `orderer_consensus::trace`
+  (a text format, formatter and `replay`), `SimConfig::record` to record every
+  node's inputs and outputs from the simulator, and the `tracegen` binary that
+  writes capped per-node traces (`orderer/vectors/replication/`, 28 traces,
+  28,000 drain points) which the C++, Go, Java and TypeScript ports replay.
 - Client safety and transport authentication for the replicated engine:
   exactly-once sessions (`Client::with_session` / `propose_session`, `DedupSm`,
   payload tag 2), linearizable reads through a log barrier

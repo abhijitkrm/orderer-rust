@@ -12,6 +12,7 @@
 pub mod core;
 pub mod rng;
 pub mod sim;
+pub mod trace;
 
 pub use crate::core::{
     Config, Disk, Effect, Entry, Index, Msg, Mutation, Node, NodeId, Persist, Role, Term,
