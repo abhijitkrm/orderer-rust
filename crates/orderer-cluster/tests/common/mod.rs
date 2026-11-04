@@ -9,10 +9,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+type Applied = Arc<Mutex<Vec<(Index, Vec<u8>)>>>;
+
 /// Records every applied non-empty entry; snapshots are its serialization.
 #[derive(Clone, Default)]
 pub struct Recorder {
-    pub applied: Arc<Mutex<Vec<(Index, Vec<u8>)>>>,
+    pub applied: Applied,
     /// Corrupt the state at this index (to provoke divergence).
     pub corrupt_at: Option<Index>,
 }
@@ -162,7 +164,7 @@ impl Cluster {
         for (i, n) in self.nodes.iter().enumerate() {
             if let Some(n) = n {
                 let s = n.handle().status();
-                if s.role == Role::Leader && best.is_none_or(|(t, _)| s.term > t) {
+                if s.role == Role::Leader && best.map_or(true, |(t, _)| s.term > t) {
                     best = Some((s.term, i));
                 }
             }

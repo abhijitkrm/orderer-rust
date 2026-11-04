@@ -144,7 +144,7 @@ fn fits(disk: &Disk, p: &Persist) -> bool {
         _ => (disk.base, disk.log.len()),
     };
     // After any compaction, `from - 1` must land inside (or just after) what remains.
-    p.from - 1 >= base && p.from - 1 - base <= len as u64
+    p.from > base && p.from - 1 - base <= len as u64
 }
 
 fn valid_frame_follows(data: &[u8], bad: usize) -> bool {
