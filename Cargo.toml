@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/orderer-core", "crates/orderer-disruptor", "crates/orderer-consensus", "crates/orderer"]
+members = ["crates/orderer-core", "crates/orderer-disruptor", "crates/orderer-consensus", "crates/orderer", "crates/orderer-cluster"]
 # CI checks sibling repos out under upstream/; they are their own workspaces
 exclude = ["upstream"]
 

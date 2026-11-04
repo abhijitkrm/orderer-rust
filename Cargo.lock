@@ -124,6 +124,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "orderer-cluster"
+version = "0.2.1"
+dependencies = [
+ "orderer",
+ "orderer-consensus",
+ "orderer-core",
+]
+
+[[package]]
 name = "orderer-consensus"
 version = "0.2.1"
 
