@@ -59,6 +59,10 @@ pub struct ReplicaConfig {
     /// behind the commit point, so a slow state machine pushes back on
     /// producers instead of stalling the consensus thread.
     pub max_apply_backlog: u64,
+    /// Pre-shared cluster key. When set, replicas authenticate each other and
+    /// every frame is integrity-protected (see `auth.rs`); all members must
+    /// use the same key. Not encryption.
+    pub auth_key: Option<Vec<u8>>,
 }
 
 impl ReplicaConfig {
@@ -81,6 +85,7 @@ impl ReplicaConfig {
             propose_timeout: Duration::from_secs(5),
             max_pending: 4096,
             max_apply_backlog: 8192,
+            auth_key: None,
         }
     }
 }
@@ -191,6 +196,29 @@ impl ReplicaHandle {
         self.propose(payload)
     }
 
+    /// A linearizable read barrier. Commits an empty entry through the log
+    /// (so a leader that has been deposed cannot answer: it cannot commit)
+    /// and then waits until the state machine has applied it. Once this
+    /// returns `Ok(index)`, a read of the state machine reflects every write
+    /// acknowledged before the call began. Only the leader accepts it.
+    pub fn barrier(&self) -> Result<Index, ProposeError> {
+        let index = self.propose(Vec::new())?;
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while self.status().applied < index {
+            if std::time::Instant::now() > end {
+                return Err(ProposeError::Timeout);
+            }
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        Ok(index)
+    }
+
+    /// [`ReplicaHandle::state_hash`] taken after a [`ReplicaHandle::barrier`].
+    pub fn linearizable_state_hash(&self) -> Result<Option<(Index, [u8; 32])>, ProposeError> {
+        self.barrier()?;
+        Ok(self.state_hash())
+    }
+
     pub fn status(&self) -> Status {
         self.status.lock().expect("status lock").clone()
     }
@@ -297,6 +325,7 @@ impl Replica {
             }),
             snaps.clone(),
             filter.clone(),
+            cfg.auth_key.clone().map(Arc::new),
         )?;
 
         let abort = Arc::new(AtomicBool::new(false));

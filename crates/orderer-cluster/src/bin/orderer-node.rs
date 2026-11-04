@@ -124,11 +124,17 @@ fn main() {
     cfg.compact_every = compact_every;
     cfg.digest_every = digest_every;
     cfg.max_pending = 1 << 16;
+    // Pre-shared cluster key from the environment (not argv, which `ps` shows).
+    let key = std::env::var("ORDERER_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+        .map(String::into_bytes);
+    cfg.auth_key = key.clone();
     let log = audit.then(|| {
         File::create(format!("{dir}/applied.log"))
             .unwrap_or_else(|e| die(&format!("audit log: {e}")))
     });
-    let sm = Audited {
+    let sm = orderer_cluster::dedup::DedupSm::new(Audited {
         inner: PipelineSm::<FifoCore>::new(
             BookConfig::default(),
             PartitionMap::hash(partitions).unwrap_or_else(|e| die(&e.to_string())),
@@ -145,9 +151,9 @@ fn main() {
             },
         ),
         log,
-    };
+    });
     let replica = Replica::start(cfg, sm).unwrap_or_else(|e| die(&format!("start: {e}")));
-    let _server = ClientServer::start(client, replica.handle())
+    let _server = ClientServer::start_with_key(client, replica.handle(), key)
         .unwrap_or_else(|e| die(&format!("client port: {e}")));
     println!("orderer-node {id} ready (client port {client})");
     loop {

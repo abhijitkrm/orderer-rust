@@ -236,6 +236,10 @@ pub fn decode_persist(buf: &[u8]) -> R<Persist> {
 
 /// Entry payload tag: a batch of commands.
 pub const TAG_BATCH: u8 = 1;
+/// Entry payload tag: a batch of commands from a client session
+/// (`client u64 | seq u64` follow the tag). Replicas apply a given
+/// `(client, seq)` at most once, which makes client retries safe.
+pub const TAG_SESSION_BATCH: u8 = 2;
 /// One command on the wire: symbol, cmd, side, otype, tif, order_id, price,
 /// qty — the journal record without its `iseq`, checksum or padding.
 pub const CMD_BYTES: usize = 32;
@@ -251,15 +255,45 @@ pub fn encode_batch(cmds: &[(Symbol, Command)], out: &mut Vec<u8>) {
     }
 }
 
-/// Decode a batch payload. An empty payload (a leader's no-op) is an empty
-/// batch.
+/// Like [`encode_batch`], tagged with the client's session.
+pub fn encode_session_batch(client: u64, seq: u64, cmds: &[(Symbol, Command)], out: &mut Vec<u8>) {
+    out.push(TAG_SESSION_BATCH);
+    out.extend_from_slice(&client.to_le_bytes());
+    out.extend_from_slice(&seq.to_le_bytes());
+    out.extend_from_slice(&(cmds.len() as u32).to_le_bytes());
+    out.reserve(cmds.len() * CMD_BYTES);
+    let mut rec = [0u8; CMD_RECORD];
+    for (sym, cmd) in cmds {
+        encode_cmd(0, *sym, cmd, &mut rec);
+        out.extend_from_slice(&rec[8..8 + CMD_BYTES]);
+    }
+}
+
+/// The session a payload belongs to, if any, without decoding commands.
+pub fn session_of(data: &[u8]) -> Option<(u64, u64)> {
+    if data.first() != Some(&TAG_SESSION_BATCH) || data.len() < 17 {
+        return None;
+    }
+    Some((
+        u64::from_le_bytes(data[1..9].try_into().expect("8")),
+        u64::from_le_bytes(data[9..17].try_into().expect("8")),
+    ))
+}
+
+/// Decode a batch payload (plain or session-tagged). An empty payload (a
+/// leader's no-op) is an empty batch.
 pub fn decode_batch(data: &[u8]) -> R<Vec<(Symbol, Command)>> {
     if data.is_empty() {
         return Ok(Vec::new());
     }
     let mut r = Reader::new(data);
-    if r.u8()? != TAG_BATCH {
-        return Err(CodecError::Bad("entry tag"));
+    match r.u8()? {
+        TAG_BATCH => {}
+        TAG_SESSION_BATCH => {
+            r.u64()?;
+            r.u64()?;
+        }
+        _ => return Err(CodecError::Bad("entry tag")),
     }
     let n = r.u32()? as usize;
     if n != r.remaining() / CMD_BYTES || r.remaining() % CMD_BYTES != 0 {
@@ -395,5 +429,19 @@ mod tests {
         assert!(decode_batch(&[]).unwrap().is_empty());
         assert!(decode_batch(&b[..b.len() - 1]).is_err());
         assert!(decode_batch(&[9, 0, 0, 0, 0]).is_err());
+    }
+
+    #[test]
+    fn session_batches_round_trip() {
+        let cmds = vec![(3, Command::new(7, Side::Bid, 10, 1, Tif::Gtc))];
+        let mut b = Vec::new();
+        encode_session_batch(42, 9, &cmds, &mut b);
+        assert_eq!(session_of(&b), Some((42, 9)));
+        assert_eq!(decode_batch(&b).unwrap(), cmds);
+        assert_eq!(session_of(&[]), None);
+        let mut plain = Vec::new();
+        encode_batch(&cmds, &mut plain);
+        assert_eq!(session_of(&plain), None);
+        assert!(decode_batch(&b[..b.len() - 1]).is_err());
     }
 }

@@ -4,8 +4,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod auth;
 pub mod client;
 pub mod codec;
+pub mod dedup;
 pub mod pipeline_sm;
 pub mod replica;
 pub mod sha256;

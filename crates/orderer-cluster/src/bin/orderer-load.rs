@@ -11,7 +11,6 @@
 //! applied twice or invented, and every replica applied the same sequence.
 
 use orderer_cluster::client::{Client, ClientError, Conn};
-use orderer_cluster::codec::encode_batch;
 use orderer_core::*;
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
@@ -24,6 +23,14 @@ use std::time::{Duration, Instant};
 fn die(msg: &str) -> ! {
     eprintln!("orderer-load: {msg}");
     exit(2)
+}
+
+/// The pre-shared cluster key, if `ORDERER_KEY` is set.
+fn key_from_env() -> Option<Vec<u8>> {
+    std::env::var("ORDERER_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+        .map(String::into_bytes)
 }
 
 fn addrs(s: &str) -> Vec<SocketAddr> {
@@ -135,10 +142,14 @@ fn run(
                         .enumerate()
                         .map(|(i, a)| (i as u8, a))
                         .collect(),
-                );
+                )
+                // One session per thread: retries are exactly-once.
+                .with_session(t as u64 + 1);
+                if let Some(k) = key_from_env() {
+                    c = c.with_key(k);
+                }
                 let mut x = 0x9E37_79B9_7F4A_7C15u64 ^ (t as u64 + 1);
                 let mut seq = 0u64;
-                let mut payload = Vec::new();
                 while Instant::now() < end {
                     seq += 1;
                     // Batch id doubles as its first order's id; the rest are
@@ -163,9 +174,7 @@ fn run(
                             )
                         })
                         .collect();
-                    payload.clear();
-                    encode_batch(&cmds, &mut payload);
-                    match c.propose(&payload) {
+                    match c.propose_session(&cmds) {
                         Ok(_) => {
                             let _ = writeln!(acked_f.lock().unwrap(), "{id}");
                             counts.lock().unwrap().0 += 1;
@@ -191,7 +200,7 @@ fn run(
 
 fn status(clients: &[SocketAddr]) {
     for a in clients {
-        match Conn::connect(*a).and_then(|mut c| c.status()) {
+        match Conn::connect_with_key(*a, key_from_env().as_deref()).and_then(|mut c| c.status()) {
             Ok(s) => print!("{a}: {s}"),
             Err(e) => println!("{a}: unreachable ({e})"),
         }
@@ -210,7 +219,7 @@ fn settle(clients: &[SocketAddr], timeout: u64) {
         let mut rows = Vec::new();
         let mut ok = true;
         for a in clients {
-            match Conn::connect(*a)
+            match Conn::connect_with_key(*a, key_from_env().as_deref())
                 .and_then(|mut c| c.status().and_then(|s| c.hash().map(|h| (s, h))))
             {
                 Ok((s, h)) => rows.push((s, h)),

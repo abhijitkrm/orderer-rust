@@ -84,6 +84,8 @@ pub struct Cluster {
     pub nodes: Vec<Option<Replica>>,
     pub recorders: Vec<Recorder>,
     pub tune: Arc<dyn Fn(&mut ReplicaConfig) + Send + Sync>,
+    /// Wrap every replica's state machine in `DedupSm`.
+    pub dedup: bool,
 }
 
 pub fn temp(name: &str) -> PathBuf {
@@ -99,6 +101,19 @@ impl Cluster {
         n: usize,
         tune: impl Fn(&mut ReplicaConfig) + Send + Sync + 'static,
     ) -> Cluster {
+        Cluster::build(name, n, tune, false)
+    }
+
+    pub fn with_dedup(name: &str, n: usize) -> Cluster {
+        Cluster::build(name, n, |_| {}, true)
+    }
+
+    fn build(
+        name: &str,
+        n: usize,
+        tune: impl Fn(&mut ReplicaConfig) + Send + Sync + 'static,
+        dedup: bool,
+    ) -> Cluster {
         let members = free_addrs(n)
             .into_iter()
             .enumerate()
@@ -110,6 +125,7 @@ impl Cluster {
             nodes: (0..n).map(|_| None).collect(),
             recorders: (0..n).map(|_| Recorder::default()).collect(),
             tune: Arc::new(tune),
+            dedup,
         };
         for i in 0..n {
             c.start(i);
@@ -143,8 +159,13 @@ impl Cluster {
     pub fn start_with(&mut self, i: usize, rec: Recorder) {
         assert!(self.nodes[i].is_none());
         self.recorders[i] = rec.clone();
-        self.nodes[i] =
-            Some(Replica::start(self.config(i), rec).unwrap_or_else(|e| panic!("start {i}: {e}")));
+        let cfg = self.config(i);
+        let started = if self.dedup {
+            Replica::start(cfg, orderer_cluster::dedup::DedupSm::new(rec))
+        } else {
+            Replica::start(cfg, rec)
+        };
+        self.nodes[i] = Some(started.unwrap_or_else(|e| panic!("start {i}: {e}")));
     }
 
     pub fn handle(&self, i: usize) -> Option<ReplicaHandle> {

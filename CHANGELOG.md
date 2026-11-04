@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Client safety and transport authentication for the replicated engine:
+  exactly-once sessions (`Client::with_session` / `propose_session`, `DedupSm`,
+  payload tag 2), linearizable reads through a log barrier
+  (`ReplicaHandle::barrier`, client request `BARRIER`), and a pre-shared-key
+  challenge-response handshake with per-frame HMAC-SHA256 on both the replica
+  transport and the client protocol (`ReplicaConfig::auth_key`,
+  `ORDERER_KEY`). Authentication and integrity only, not encryption.
 - New crate `orderer-cluster`: the replicated engine around `orderer-consensus`
   (spec/REPLICATION.md §13). CRC-checked WAL with torn-tail and zero-tail
   recovery that refuses to start on mid-file damage, atomic snapshot store,
