@@ -391,7 +391,6 @@ impl Sim {
                     d.pending.push_back((done, p));
                 }
                 Effect::Apply { index, entry } => self.on_apply(i, index, entry)?,
-                Effect::Rejected { .. } => {}
                 Effect::NeedSnapshot { to, index, term } => {
                     let Some(data) = self.disks[i].snaps.get(&index).cloned() else {
                         return Err(format!(
@@ -451,7 +450,9 @@ impl Sim {
         self.proposed.insert(id);
         self.report.proposals += 1;
         if let Some(n) = self.nodes[i].as_mut() {
-            n.propose(id.to_le_bytes().to_vec());
+            if n.propose(id.to_le_bytes().to_vec()).is_ok() {
+                n.replicate();
+            }
         }
         let _ = self.drain(i);
     }

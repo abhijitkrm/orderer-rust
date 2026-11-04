@@ -94,10 +94,6 @@ pub enum Effect {
         index: Index,
         entry: Entry,
     },
-    /// A proposal was refused: this node is not the leader.
-    Rejected {
-        leader: Option<NodeId>,
-    },
     /// `to` needs state the log no longer holds. The host should transfer its
     /// stored snapshot at `index` (the log base) to `to`, which installs it
     /// with [`Node::install_snapshot`].
@@ -374,19 +370,26 @@ impl Node {
         }
     }
 
-    /// Submit client data. Only the leader accepts it.
-    pub fn propose(&mut self, data: Vec<u8>) {
+    /// Append client data to the log. Only the leader accepts it; on
+    /// success returns the entry's index (it is committed when an
+    /// [`Effect::Apply`] for that index and this node's term arrives). Call
+    /// [`Node::replicate`] afterwards, once per batch.
+    pub fn propose(&mut self, data: Vec<u8>) -> Result<Index, Option<NodeId>> {
         if self.role != Role::Leader {
-            self.out.push(Effect::Rejected {
-                leader: self.leader,
-            });
-            return;
+            return Err(self.leader);
         }
         self.leader_append(Entry {
             term: self.term,
             data,
         });
-        self.broadcast_append();
+        Ok(self.last_index())
+    }
+
+    /// Send any entries followers are missing (leader only).
+    pub fn replicate(&mut self) {
+        if self.role == Role::Leader {
+            self.broadcast_append();
+        }
     }
 
     /// The host has stored a snapshot of the state after applying entries up
@@ -809,6 +812,7 @@ impl Node {
         let start = (prev_index - self.base) as usize;
         let end = self.log.len().min(start + self.cfg.max_batch);
         let entries = self.log[start..end].to_vec();
+        let sent = entries.len() as Index;
         let msg = Msg::Append {
             term: self.term,
             prev_index,
@@ -816,6 +820,9 @@ impl Node {
             entries,
             commit: self.commit,
         };
+        // Optimistically advance so a burst of proposals is not resent; a
+        // lost message surfaces as a failed reply carrying a hint.
+        self.next_index[i] = next + sent;
         self.send(to, msg);
     }
 
