@@ -5,6 +5,8 @@
 use orderer_consensus::sim::{run, SimConfig};
 use orderer_consensus::Mutation;
 
+mod common;
+
 fn caught(m: Mutation, seeds: u64) -> Option<String> {
     let mut cfg = SimConfig::default();
     cfg.node_cfg.mutation = m;
@@ -34,6 +36,13 @@ fn double_voting_is_caught() {
     eprintln!("caught: {e}");
 }
 
-// Not covered: the "commit only current-term entries by counting" rule (Raft
-// figure 8). Dropping it was not found in 3000 five-node seeds, because the
-// leader's no-op makes the unsafe interleaving rare. Recorded in spec/REPLICATION.md §10.
+/// Raft figure 8: the directed scenario (tests/common) exposes the bug
+/// deterministically, which random search could not.
+#[test]
+fn committing_old_terms_by_counting_is_caught() {
+    let commit = common::figure8(Mutation::CommitOldTerm);
+    assert_ne!(
+        commit, 0,
+        "mutant should have committed an old-term entry by counting"
+    );
+}

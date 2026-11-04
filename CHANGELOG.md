@@ -11,7 +11,9 @@
   leader completeness, a single agreed committed sequence, no duplicate
   commits, and post-heal convergence. 33,000 seeds clean (3, 5 and 7 nodes,
   with and without pre-vote). Three deliberately broken variants
-  (`--features mutations`) are all caught; the figure-8 rule is not covered.
+  (`--features mutations`) are all caught, and a directed test pins Raft's
+  figure-8 rule (an old-term entry on a majority is not committed by counting;
+  the matching mutant is caught).
 - Fix: `Pipeline::stats()` panicked with `EgressPlacement::Inline` (it read a
   per-partition outbox ring that does not exist there). Now 0 outbox depth, with a
   regression test.

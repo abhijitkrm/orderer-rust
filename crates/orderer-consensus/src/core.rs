@@ -127,6 +127,8 @@ pub enum Mutation {
     SkipUpToDateCheck,
     /// Grant a second vote in the same term.
     IgnoreVotedFor,
+    /// Commit earlier-term entries by counting replicas (Raft figure 8).
+    CommitOldTerm,
 }
 
 #[derive(Clone, Debug)]
@@ -787,7 +789,8 @@ impl Node {
         let idx = if one_ack { m[0] } else { m[self.quorum() - 1] };
         // Only entries of the current term are committed by counting
         // (earlier ones ride along); this is the Raft figure-8 rule.
-        if idx > self.commit && (one_ack || self.term_at(idx) == self.term) {
+        let old_ok = self.mutated(Mutation::CommitOldTerm);
+        if idx > self.commit && (one_ack || old_ok || self.term_at(idx) == self.term) {
             self.commit = idx;
             self.apply_committed();
         }
