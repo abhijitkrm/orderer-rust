@@ -38,6 +38,21 @@ pub trait StateMachine: Send + 'static {
     }
 }
 
+impl StateMachine for Box<dyn StateMachine> {
+    fn apply(&mut self, index: Index, entry: &Entry) {
+        (**self).apply(index, entry)
+    }
+    fn snapshot(&mut self, index: Index) -> Vec<u8> {
+        (**self).snapshot(index)
+    }
+    fn restore(&mut self, index: Index, data: &[u8]) -> Result<(), String> {
+        (**self).restore(index, data)
+    }
+    fn digest(&mut self, index: Index) -> Option<[u8; 32]> {
+        (**self).digest(index)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ReplicaConfig {
     pub id: NodeId,

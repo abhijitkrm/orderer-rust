@@ -9,6 +9,7 @@ pub mod client;
 pub mod codec;
 pub mod dedup;
 pub mod pipeline_sm;
+pub mod recorder;
 pub mod replica;
 pub mod sha256;
 pub mod shard;

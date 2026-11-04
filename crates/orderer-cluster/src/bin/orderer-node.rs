@@ -2,7 +2,7 @@
 //!
 //!   orderer-node --id N --members 0=HOST:PORT,1=HOST:PORT,... --client HOST:PORT
 //!                --dir DIR [--partitions P] [--compact-every N] [--digest-every N]
-//!                [--fsync on|off] [--audit]
+//!                [--fsync on|off] [--audit] [--sm pipeline|recorder]
 //!
 //! `--audit` appends `(log index, first order id)` for every applied batch to
 //! `DIR/applied.log` (truncated at start, so it reflects this incarnation's
@@ -70,6 +70,7 @@ fn main() {
     );
     let (mut partitions, mut compact_every, mut digest_every, mut fsync, mut audit) =
         (2u32, 0u64, 0u64, true, false);
+    let mut sm_kind = String::from("pipeline");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut v = |n: &str| {
@@ -109,6 +110,7 @@ fn main() {
             }
             "--fsync" => fsync = v("--fsync") == "on",
             "--audit" => audit = true,
+            "--sm" => sm_kind = v("--sm"),
             other => die(&format!("unknown argument {other}")),
         }
     }
@@ -134,8 +136,9 @@ fn main() {
         File::create(format!("{dir}/applied.log"))
             .unwrap_or_else(|e| die(&format!("audit log: {e}")))
     });
-    let sm = orderer_cluster::dedup::DedupSm::new(Audited {
-        inner: PipelineSm::<FifoCore>::new(
+    let inner: Box<dyn StateMachine> = match sm_kind.as_str() {
+        "recorder" => Box::new(orderer_cluster::recorder::RecorderSm::new()),
+        "pipeline" => Box::new(PipelineSm::<FifoCore>::new(
             BookConfig::default(),
             PartitionMap::hash(partitions).unwrap_or_else(|e| die(&e.to_string())),
             move |init| {
@@ -149,9 +152,10 @@ fn main() {
                 }
                 b.build().expect("pipeline")
             },
-        ),
-        log,
-    });
+        )),
+        other => die(&format!("--sm {other}: want pipeline or recorder")),
+    };
+    let sm = orderer_cluster::dedup::DedupSm::new(Audited { inner, log });
     let replica = Replica::start(cfg, sm).unwrap_or_else(|e| die(&format!("start: {e}")));
     let _server = ClientServer::start_with_key(client, replica.handle(), key)
         .unwrap_or_else(|e| die(&format!("client port: {e}")));
