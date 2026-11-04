@@ -205,32 +205,73 @@ pub const EVT_RECORD_V1: usize = 48;
 pub const VERSION: u16 = 2;
 const MAGIC: &[u8; 4] = b"ORDJ";
 
+/// Slicing-by-8 tables for CRC-32C (reflected 0x82F63B78). `T[0]` is the
+/// classic byte table; `T[k][i]` is the CRC of byte `i` followed by `k` zero
+/// bytes, which lets eight input bytes be folded per step.
+const CRC_TABLES: [[u32; 256]; 8] = {
+    let mut t = [[0u32; 256]; 8];
+    let mut i = 0;
+    while i < 256 {
+        let mut c = i as u32;
+        let mut k = 0;
+        while k < 8 {
+            c = if c & 1 != 0 {
+                (c >> 1) ^ 0x82F6_3B78
+            } else {
+                c >> 1
+            };
+            k += 1;
+        }
+        t[0][i] = c;
+        i += 1;
+    }
+    let mut i = 0;
+    while i < 256 {
+        let mut k = 1;
+        while k < 8 {
+            let prev = t[k - 1][i];
+            t[k][i] = (prev >> 8) ^ t[0][(prev & 0xFF) as usize];
+            k += 1;
+        }
+        i += 1;
+    }
+    t
+};
+
+/// Fold `data` into a running CRC-32C state (start from `!0`, finish with
+/// `!`). Exposed so streamed data can be checksummed incrementally.
+pub fn crc32c_update(c: u32, data: &[u8]) -> u32 {
+    #[cfg(feature = "hwcrc")]
+    if let Some(v) = crate::hwcrc::update(c, data) {
+        return v;
+    }
+    crc32c_update_portable(c, data)
+}
+
+/// The portable slicing-by-8 implementation (always available).
+pub fn crc32c_update_portable(mut c: u32, data: &[u8]) -> u32 {
+    let mut chunks = data.chunks_exact(8);
+    for ch in &mut chunks {
+        let lo = u32::from_le_bytes([ch[0], ch[1], ch[2], ch[3]]) ^ c;
+        let hi = u32::from_le_bytes([ch[4], ch[5], ch[6], ch[7]]);
+        c = CRC_TABLES[7][(lo & 0xFF) as usize]
+            ^ CRC_TABLES[6][((lo >> 8) & 0xFF) as usize]
+            ^ CRC_TABLES[5][((lo >> 16) & 0xFF) as usize]
+            ^ CRC_TABLES[4][(lo >> 24) as usize]
+            ^ CRC_TABLES[3][(hi & 0xFF) as usize]
+            ^ CRC_TABLES[2][((hi >> 8) & 0xFF) as usize]
+            ^ CRC_TABLES[1][((hi >> 16) & 0xFF) as usize]
+            ^ CRC_TABLES[0][(hi >> 24) as usize];
+    }
+    for &b in chunks.remainder() {
+        c = CRC_TABLES[0][((c ^ u32::from(b)) & 0xFF) as usize] ^ (c >> 8);
+    }
+    c
+}
+
 /// CRC-32C (Castagnoli, reflected 0x82F63B78), spec/JOURNAL.md §2.2.
 pub fn crc32c(data: &[u8]) -> u32 {
-    const TABLE: [u32; 256] = {
-        let mut t = [0u32; 256];
-        let mut i = 0;
-        while i < 256 {
-            let mut c = i as u32;
-            let mut k = 0;
-            while k < 8 {
-                c = if c & 1 != 0 {
-                    (c >> 1) ^ 0x82F6_3B78
-                } else {
-                    c >> 1
-                };
-                k += 1;
-            }
-            t[i] = c;
-            i += 1;
-        }
-        t
-    };
-    let mut c = !0u32;
-    for &b in data {
-        c = TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);
-    }
-    !c
+    !crc32c_update(!0, data)
 }
 
 /// Seal a version-2 record: CRC-32C of the payload, then zeros.
@@ -1154,6 +1195,95 @@ fn headerless(path: &Path, bytes: &[u8], format: JournalFormat) -> bool {
         JournalFormat::Jsonl => !bytes.contains(&b'\n'),
         JournalFormat::Binary => {
             parse_binary_header(path, bytes).is_err() && bytes.iter().skip(HEADER).all(|&b| b == 0)
+        }
+    }
+}
+
+#[cfg(test)]
+mod crc_tests {
+    use super::*;
+
+    /// The definition, one bit at a time.
+    fn reference(data: &[u8]) -> u32 {
+        let mut c = !0u32;
+        for &b in data {
+            c ^= u32::from(b);
+            for _ in 0..8 {
+                c = if c & 1 != 0 {
+                    (c >> 1) ^ 0x82F6_3B78
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        !c
+    }
+
+    #[test]
+    fn check_value() {
+        assert_eq!(crc32c(b"123456789"), 0xE306_9283);
+        assert_eq!(crc32c(b""), 0);
+    }
+
+    #[test]
+    fn matches_the_bitwise_definition_at_every_length_and_alignment() {
+        let mut x = 0x2545_F491_4F6C_DD1Du64;
+        let data: Vec<u8> = (0..700)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+        for start in 0..9 {
+            for len in 0..(data.len() - start).min(300) {
+                let s = &data[start..start + len];
+                assert_eq!(crc32c(s), reference(s), "start {start} len {len}");
+            }
+        }
+    }
+
+    #[cfg(feature = "hwcrc")]
+    #[test]
+    fn hardware_agrees_with_portable() {
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let data: Vec<u8> = (0..4096)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+        let mut used = false;
+        for start in 0..9 {
+            for len in (0..300).chain([1000, 4000]) {
+                let s = &data[start..(start + len).min(data.len())];
+                for init in [!0u32, 0, 0xDEAD_BEEF] {
+                    if let Some(hw) = crate::hwcrc::update(init, s) {
+                        used = true;
+                        assert_eq!(
+                            hw,
+                            crc32c_update_portable(init, s),
+                            "start {start} len {len}"
+                        );
+                    }
+                }
+            }
+        }
+        eprintln!("hardware CRC available: {used}");
+    }
+
+    #[test]
+    fn incremental_equals_one_shot() {
+        let data: Vec<u8> = (0..5000u32).map(|i| (i * 31 + 7) as u8).collect();
+        for step in [1, 3, 7, 8, 13, 64, 999] {
+            let mut c = !0u32;
+            for part in data.chunks(step) {
+                c = crc32c_update(c, part);
+            }
+            assert_eq!(!c, crc32c(&data), "step {step}");
         }
     }
 }

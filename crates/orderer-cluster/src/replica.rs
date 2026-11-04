@@ -16,7 +16,7 @@ use orderer_core::{Command, Symbol};
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, sync_channel, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -55,6 +55,10 @@ pub struct ReplicaConfig {
     pub propose_timeout: Duration,
     /// Backpressure: refuse proposals beyond this many in flight.
     pub max_pending: usize,
+    /// Refuse new proposals while the state machine is this many entries
+    /// behind the commit point, so a slow state machine pushes back on
+    /// producers instead of stalling the consensus thread.
+    pub max_apply_backlog: u64,
 }
 
 impl ReplicaConfig {
@@ -76,6 +80,7 @@ impl ReplicaConfig {
             fsync: true,
             propose_timeout: Duration::from_secs(5),
             max_pending: 4096,
+            max_apply_backlog: 8192,
         }
     }
 }
@@ -129,6 +134,25 @@ enum Event {
         payload: Vec<u8>,
         reply: SyncSender<Result<Index, ProposeError>>,
     },
+    Hash(SyncSender<Option<(Index, [u8; 32])>>),
+    /// The applier stored a snapshot; the log may now drop what it covers.
+    SnapshotStored {
+        index: Index,
+    },
+    DigestComputed {
+        index: Index,
+        digest: [u8; 32],
+    },
+    /// The applier hit an unrecoverable error.
+    Fatal(String),
+    Stop,
+}
+
+/// Work for the applier thread, which alone touches the state machine.
+enum Job {
+    Apply { index: Index, entry: Entry },
+    Snapshot { index: Index, term: Term },
+    Restore { index: Index },
     Hash(SyncSender<Option<(Index, [u8; 32])>>),
     Stop,
 }
@@ -240,6 +264,7 @@ impl Replica {
             })?;
             sm.restore(disk.base, &data).map_err(StartError::State)?;
         }
+        let base0 = disk.base;
         let peers: Vec<NodeId> = cfg.members.iter().map(|m| m.0).collect();
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -281,6 +306,18 @@ impl Replica {
             thread::spawn(move || wal_thread(wal, io_rx, tx, abort, fsync))
         };
 
+        let sm_applied = Arc::new(AtomicU64::new(base0));
+        let (job_tx, job_rx) = channel::<Job>();
+        let applier = {
+            let (ev, snaps, applied, every) = (
+                tx.clone(),
+                snaps.clone(),
+                sm_applied.clone(),
+                cfg.digest_every,
+            );
+            thread::spawn(move || applier_thread(sm, job_rx, ev, snaps, applied, every))
+        };
+
         let handle = ReplicaHandle {
             tx,
             status: status.clone(),
@@ -288,7 +325,10 @@ impl Replica {
         let driver = Driver {
             cfg,
             node,
-            sm,
+            applier_tx: job_tx,
+            applier: Some(applier),
+            sm_applied,
+            snapshot_pending: false,
             snaps,
             transport,
             io_tx: Some(io_tx),
@@ -393,16 +433,74 @@ fn wal_thread(
     }
 }
 
+fn applier_thread<S: StateMachine>(
+    mut sm: S,
+    rx: Receiver<Job>,
+    ev: Sender<Event>,
+    snaps: Arc<SnapStore>,
+    applied: Arc<AtomicU64>,
+    digest_every: u64,
+) {
+    while let Ok(job) = rx.recv() {
+        match job {
+            Job::Apply { index, entry } => {
+                sm.apply(index, &entry);
+                applied.store(index, Ordering::Release);
+                if digest_every > 0 && index % digest_every == 0 {
+                    if let Some(digest) = sm.digest(index) {
+                        let _ = ev.send(Event::DigestComputed { index, digest });
+                    }
+                }
+            }
+            Job::Snapshot { index, term } => {
+                let data = sm.snapshot(index);
+                match snaps.put(index, term, &data) {
+                    Ok(()) => {
+                        let _ = ev.send(Event::SnapshotStored { index });
+                    }
+                    Err(e) => {
+                        let _ = ev.send(Event::Fatal(format!("writing snapshot {index}: {e}")));
+                    }
+                }
+            }
+            Job::Restore { index } => {
+                let r = snaps
+                    .get(index)
+                    .map_err(|e| format!("reading snapshot {index}: {e}"))
+                    .and_then(|(_, data)| {
+                        sm.restore(index, &data)
+                            .map_err(|e| format!("restoring snapshot {index}: {e}"))
+                    });
+                match r {
+                    Ok(()) => applied.store(index, Ordering::Release),
+                    Err(e) => {
+                        let _ = ev.send(Event::Fatal(e));
+                    }
+                }
+            }
+            Job::Hash(reply) => {
+                let at = applied.load(Ordering::Acquire);
+                let _ = reply.send(sm.digest(at).map(|d| (at, d)));
+            }
+            Job::Stop => break,
+        }
+    }
+}
+
 struct Pending {
     term: Term,
     reply: SyncSender<Result<Index, ProposeError>>,
     deadline: Instant,
 }
 
-struct Driver<S: StateMachine> {
+struct Driver {
     cfg: ReplicaConfig,
     node: Node,
-    sm: S,
+    applier_tx: Sender<Job>,
+    applier: Option<JoinHandle<()>>,
+    /// Highest index the state machine has applied (written by the applier).
+    sm_applied: Arc<AtomicU64>,
+    snapshot_pending: bool,
     snaps: Arc<SnapStore>,
     transport: Transport,
     io_tx: Option<Sender<Persist>>,
@@ -416,7 +514,7 @@ struct Driver<S: StateMachine> {
     halted: Option<String>,
 }
 
-impl<S: StateMachine> Driver<S> {
+impl Driver {
     fn run(mut self, rx: Receiver<Event>) {
         let mut next_tick = Instant::now() + self.cfg.tick;
         'outer: loop {
@@ -463,6 +561,10 @@ impl<S: StateMachine> Driver<S> {
             let _ = p.reply.send(Err(ProposeError::Unknown));
         }
         self.transport.shutdown();
+        let _ = self.applier_tx.send(Job::Stop);
+        if let Some(t) = self.applier.take() {
+            let _ = t.join();
+        }
         drop(self.io_tx.take());
         if let Some(t) = self.io_thread.take() {
             let _ = t.join();
@@ -504,7 +606,12 @@ impl<S: StateMachine> Driver<S> {
                 self.check_digests(index);
             }
             Event::Propose { payload, reply } => {
-                if self.pending.len() >= self.cfg.max_pending {
+                let behind = self
+                    .node
+                    .applied_index()
+                    .saturating_sub(self.sm_applied.load(Ordering::Acquire));
+                if self.pending.len() >= self.cfg.max_pending || behind > self.cfg.max_apply_backlog
+                {
                     let _ = reply.send(Err(ProposeError::Busy));
                 } else {
                     match self.node.propose(payload) {
@@ -526,9 +633,27 @@ impl<S: StateMachine> Driver<S> {
                 }
             }
             Event::Hash(reply) => {
-                let applied = self.node.applied_index();
-                let _ = reply.send(self.sm.digest(applied).map(|d| (applied, d)));
+                let _ = self.applier_tx.send(Job::Hash(reply));
             }
+            Event::SnapshotStored { index } => {
+                self.snapshot_pending = false;
+                if index > self.node.base() && index <= self.node.applied_index() {
+                    self.node.compact(index);
+                }
+            }
+            Event::DigestComputed { index, digest } => {
+                self.digests
+                    .entry(index)
+                    .or_default()
+                    .insert(self.cfg.id, digest);
+                for &(id, _) in &self.cfg.members {
+                    if id != self.cfg.id {
+                        self.transport.send_digest(id, index, digest);
+                    }
+                }
+                self.check_digests(index);
+            }
+            Event::Fatal(why) => self.halt(why),
         }
         true
     }
@@ -565,26 +690,23 @@ impl<S: StateMachine> Driver<S> {
                             let _ = tx.send(p);
                         }
                     }
-                    Effect::Apply { index, entry } => self.apply(index, &entry),
+                    Effect::Apply { index, entry } => self.committed(index, entry),
                     Effect::NeedSnapshot { to, index, term } => {
                         self.transport
                             .send_snapshot(to, self.node.term(), index, term);
                     }
-                    Effect::Restore { index, .. } => match self.snaps.get(index) {
-                        Ok((_, data)) => {
-                            if let Err(e) = self.sm.restore(index, &data) {
-                                self.halt(format!("restoring snapshot {index}: {e}"));
-                            }
-                        }
-                        Err(e) => self.halt(format!("reading snapshot {index}: {e}")),
-                    },
+                    Effect::Restore { index, .. } => {
+                        let _ = self.applier_tx.send(Job::Restore { index });
+                    }
                 }
             }
         }
     }
 
-    fn apply(&mut self, index: Index, entry: &Entry) {
-        self.sm.apply(index, entry);
+    /// An entry committed: acknowledge its proposer, then queue it for the
+    /// state machine. Acknowledgement means committed (durable on a quorum),
+    /// not yet applied.
+    fn committed(&mut self, index: Index, entry: Entry) {
         if let Some(p) = self.pending.remove(&index) {
             let r = if p.term == entry.term {
                 Ok(index)
@@ -593,21 +715,7 @@ impl<S: StateMachine> Driver<S> {
             };
             let _ = p.reply.send(r);
         }
-        let every = self.cfg.digest_every;
-        if every > 0 && index % every == 0 {
-            if let Some(d) = self.sm.digest(index) {
-                self.digests
-                    .entry(index)
-                    .or_default()
-                    .insert(self.cfg.id, d);
-                for &(id, _) in &self.cfg.members {
-                    if id != self.cfg.id {
-                        self.transport.send_digest(id, index, d);
-                    }
-                }
-                self.check_digests(index);
-            }
-        }
+        let _ = self.applier_tx.send(Job::Apply { index, entry });
     }
 
     /// Fail-stop if this node's state differs from the majority's.
@@ -649,7 +757,7 @@ impl<S: StateMachine> Driver<S> {
 
     fn maybe_compact(&mut self) {
         let every = self.cfg.compact_every;
-        if every == 0 || self.halted.is_some() {
+        if every == 0 || self.halted.is_some() || self.snapshot_pending {
             return;
         }
         let applied = self.node.applied_index();
@@ -659,12 +767,13 @@ impl<S: StateMachine> Driver<S> {
         let Some(term) = self.node.entry_at(applied).map(|e| e.term) else {
             return;
         };
-        let data = self.sm.snapshot(applied);
-        if let Err(e) = self.snaps.put(applied, term, &data) {
-            self.halt(format!("writing snapshot {applied}: {e}"));
-            return;
-        }
-        self.node.compact(applied);
+        // The applier snapshots after applying `applied`, then reports back;
+        // only then does the log drop the prefix.
+        self.snapshot_pending = true;
+        let _ = self.applier_tx.send(Job::Snapshot {
+            index: applied,
+            term,
+        });
     }
 
     fn publish_status(&self) {
@@ -673,7 +782,7 @@ impl<S: StateMachine> Driver<S> {
         s.term = self.node.term();
         s.leader = self.node.leader();
         s.commit = self.node.commit_index();
-        s.applied = self.node.applied_index();
+        s.applied = self.sm_applied.load(Ordering::Acquire);
         s.base = self.node.base();
         s.last_index = self.node.last_index();
         s.pending = self.pending.len();

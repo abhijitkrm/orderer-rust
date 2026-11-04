@@ -33,6 +33,8 @@ pub mod affinity;
 pub mod egress;
 #[doc(hidden)]
 pub mod harness;
+#[cfg(feature = "hwcrc")]
+pub mod hwcrc;
 pub mod journal;
 pub mod msg;
 mod pipeline;

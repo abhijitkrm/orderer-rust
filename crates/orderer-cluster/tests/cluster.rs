@@ -490,3 +490,66 @@ fn three_nodes_cannot_commit_with_two_down() {
     );
     assert_eq!(c.recorders[l].payloads(), vec![payload(0)]);
 }
+
+/// A slow state machine on the leader must not stall consensus. If applying
+/// blocked the consensus thread, a burst of proposals would starve its ticks
+/// and heartbeats, the followers would time out, and leadership would move.
+#[test]
+fn a_slow_leader_state_machine_does_not_cost_it_leadership() {
+    use orderer_cluster::StateMachine;
+    use orderer_consensus::{Entry, Index};
+
+    struct Slow(Recorder);
+    impl StateMachine for Slow {
+        fn apply(&mut self, i: Index, e: &Entry) {
+            std::thread::sleep(Duration::from_millis(700));
+            self.0.apply(i, e);
+        }
+        fn snapshot(&mut self, i: Index) -> Vec<u8> {
+            self.0.snapshot(i)
+        }
+        fn restore(&mut self, i: Index, d: &[u8]) -> Result<(), String> {
+            self.0.restore(i, d)
+        }
+    }
+
+    let mut c = Cluster::new("slow-leader", 3, |_| {});
+    for i in 0..3 {
+        c.stop(i);
+    }
+    // Node 0 wins the first election (short timeout) and has the slow machine.
+    for i in 0..3 {
+        let mut cfg = c.config(i);
+        cfg.max_pending = 100_000;
+        cfg.propose_timeout = Duration::from_secs(30);
+        cfg.consensus.election_ticks = if i == 0 { 8 } else { 40 };
+        let rec = Recorder::default();
+        c.recorders[i] = rec.clone();
+        c.nodes[i] = Some(if i == 0 {
+            orderer_cluster::Replica::start(cfg, Slow(rec)).unwrap()
+        } else {
+            orderer_cluster::Replica::start(cfg, rec).unwrap()
+        });
+    }
+    let l = c.wait_leader(Duration::from_secs(5));
+    assert_eq!(l, 0, "node 0 should have won the first election");
+    let term0 = c.handle(0).unwrap().status().term;
+
+    // Each apply on node 0 outlasts the followers' election timeout (200-400
+    // ms), so if applying ran on the consensus thread its heartbeats would stop.
+    let h = c.handle(0).unwrap();
+    let rxs: Vec<_> = (0..3u64).map(|i| h.propose_async(payload(i))).collect();
+    for rx in rxs {
+        rx.recv().unwrap().expect("burst proposal acknowledged");
+    }
+    let s = h.status();
+    assert_eq!(
+        (s.role, s.term, s.halted),
+        (Role::Leader, term0, None),
+        "leadership was lost while the state machine was slow"
+    );
+    // Followers apply promptly; the slow node eventually catches up.
+    c.wait_applied(&[1, 2], 3, Duration::from_secs(5));
+    c.wait_applied(&[0], 3, Duration::from_secs(30));
+    assert_eq!(c.wait_converged(Duration::from_secs(30)).len(), 3);
+}
