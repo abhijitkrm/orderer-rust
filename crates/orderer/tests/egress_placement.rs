@@ -107,6 +107,9 @@ fn inline_egress_has_stats_without_an_outbox() {
     let st = p.stats();
     assert_eq!(st.partitions.len(), 3);
     assert!(st.partitions.iter().all(|s| s.outbox_depth == 0));
-    assert_eq!(st.partitions.iter().map(|s| s.commands).sum::<u64>(), cmds.len() as u64);
+    assert_eq!(
+        st.partitions.iter().map(|s| s.commands).sum::<u64>(),
+        cmds.len() as u64
+    );
     p.shutdown().unwrap();
 }

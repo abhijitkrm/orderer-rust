@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- New crate `orderer-consensus` (R-B of `spec/REPLICATION.md`, draft): the
+  replicated-log protocol as a pure state machine (Raft-style elections with
+  pre-vote, check-quorum, commit-gated apply) plus a deterministic cluster
+  simulator and `simsweep`. Not yet wired into the pipeline. The simulator
+  injects message loss, duplication, reordering and partitions, crashes with
+  torn disk tails and slow fsync, and checks election safety, log matching,
+  leader completeness, a single agreed committed sequence, no duplicate
+  commits, and post-heal convergence. 33,000 seeds clean (3, 5 and 7 nodes,
+  with and without pre-vote). Three deliberately broken variants
+  (`--features mutations`) are all caught; the figure-8 rule is not covered.
 - Fix: `Pipeline::stats()` panicked with `EgressPlacement::Inline` (it read a
   per-partition outbox ring that does not exist there). Now 0 outbox depth, with a
   regression test.

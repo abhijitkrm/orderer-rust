@@ -1,0 +1,24 @@
+[package]
+name = "orderer-consensus"
+description = "Pure Raft-style replicated-log protocol core and deterministic simulator for the orderer pipeline (spec/REPLICATION.md)"
+keywords = ["raft", "consensus", "replication", "simulation", "exchange"]
+categories = ["algorithms"]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+
+[features]
+# Deliberate protocol bugs, so tests can prove the simulator catches them.
+# Never enable outside tests.
+mutations = []
+
+[[test]]
+name = "mutations"
+required-features = ["mutations"]
