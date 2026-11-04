@@ -229,6 +229,17 @@ impl Wal {
         self.file.sync_data()
     }
 
+    /// Write buffered frames to the OS without waiting for the disk (for
+    /// benchmarks and tests; the writes are not durable).
+    pub fn sync_no_fsync(&mut self) -> io::Result<()> {
+        if !self.buf.is_empty() {
+            self.file.write_all(&self.buf)?;
+            self.len += self.buf.len() as u64;
+            self.buf.clear();
+        }
+        Ok(())
+    }
+
     pub fn len(&self) -> u64 {
         self.len
     }

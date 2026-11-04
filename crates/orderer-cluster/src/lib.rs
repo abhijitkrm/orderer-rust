@@ -5,6 +5,12 @@
 #![forbid(unsafe_code)]
 
 pub mod codec;
+pub mod replica;
 pub mod sha256;
 pub mod snapstore;
+pub mod transport;
 pub mod wal;
+
+pub use replica::{
+    ProposeError, Replica, ReplicaConfig, ReplicaHandle, StartError, StateMachine, Status,
+};
