@@ -6,6 +6,9 @@
 #
 #   scripts/failover.sh            # defaults: 30 s of load, 5 leader kills
 #   SECS=60 KILLS=10 scripts/failover.sh
+#   DIGEST_EVERY=1024 scripts/failover.sh  # a digest costs a full state snapshot; see REPLICATION.md
+#   KEEP_ALIVE=1 scripts/failover.sh       # on failure, leave the nodes running to inspect
+#   FSYNC=relaxed:20 scripts/failover.sh   # commit waits for the write, not the flush
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -22,6 +25,11 @@ CLIENTS="127.0.0.1:$((BASE + 100)),127.0.0.1:$((BASE + 101)),127.0.0.1:$((BASE +
 declare -a PIDS=(0 0 0)
 
 cleanup() {
+  local rc=$?
+  if [[ -n "${KEEP_ALIVE:-}" && $rc -ne 0 ]]; then
+    echo "KEEP_ALIVE: failed (status $rc); nodes still running, pids ${PIDS[*]}, logs in $TMP"
+    return
+  fi
   for i in 0 1 2; do kill -9 "${PIDS[$i]}" 2>/dev/null || true; done
   [[ -n "${LOAD_PID:-}" ]] && kill "$LOAD_PID" 2>/dev/null || true
   [[ -z "${KEEP:-}" ]] && rm -rf "$TMP"
@@ -31,7 +39,7 @@ trap cleanup EXIT
 start_node() {
   local i=$1
   "$BIN/orderer-node" --id "$i" --members "$MEMBERS" --client "127.0.0.1:$((BASE + 100 + i))" \
-    --dir "$TMP/n$i" --audit --digest-every 64 --fsync on >>"$TMP/n$i.log" 2>&1 &
+    --dir "$TMP/n$i" --audit --digest-every "${DIGEST_EVERY:-64}" --fsync "${FSYNC:-on}" >>"$TMP/n$i.log" 2>&1 &
   PIDS[$i]=$!
 }
 

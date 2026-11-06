@@ -14,6 +14,7 @@ use crate::wal::{Wal, WalError};
 use orderer_consensus::{Config, Effect, Entry, Index, Node, NodeId, Persist, Role, Term};
 use orderer_core::{Command, Symbol};
 use std::collections::{BTreeMap, HashMap};
+use std::fs::File;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -67,6 +68,15 @@ pub struct ReplicaConfig {
     pub digest_every: u64,
     /// `false` skips fsync (tests and benchmarks only; loses durability).
     pub fsync: bool,
+    /// With `fsync`, `Some(d)` makes it *relaxed*: a write counts as persisted
+    /// once it is handed to the operating system, and a background thread
+    /// fsyncs about every `d`. That takes the disk flush out of the commit
+    /// path (ack latency is a network round trip, not a flush), at a price:
+    /// entries from the last `d` plus one flush can be lost if a quorum loses
+    /// power (or the OS) at once. A crashed *process* loses nothing it had
+    /// written, because the operating system still holds the data. `None` is
+    /// the default: every commit waits for an fsync on a quorum.
+    pub fsync_interval: Option<Duration>,
     pub propose_timeout: Duration,
     /// Backpressure: refuse proposals beyond this many in flight.
     pub max_pending: usize,
@@ -97,6 +107,7 @@ impl ReplicaConfig {
             compact_every: 0,
             digest_every: 0,
             fsync: true,
+            fsync_interval: None,
             propose_timeout: Duration::from_secs(5),
             max_pending: 4096,
             max_apply_backlog: 8192,
@@ -352,8 +363,13 @@ impl Replica {
         let abort = Arc::new(AtomicBool::new(false));
         let (io_tx, io_rx) = channel::<Persist>();
         let io_thread = {
-            let (tx, abort, fsync) = (tx.clone(), abort.clone(), cfg.fsync);
-            thread::spawn(move || wal_thread(wal, io_rx, tx, abort, fsync))
+            let (tx, abort, fsync, relaxed) = (
+                tx.clone(),
+                abort.clone(),
+                cfg.fsync,
+                cfg.fsync.then_some(cfg.fsync_interval).flatten(),
+            );
+            thread::spawn(move || wal_thread(wal, io_rx, tx, abort, fsync, relaxed))
         };
 
         let sm_applied = Arc::new(AtomicU64::new(base0));
@@ -434,12 +450,91 @@ impl Drop for Replica {
     }
 }
 
+/// Background fsync for relaxed durability. Owns a second handle on the WAL
+/// file, so flushes never block the writer.
+fn syncer_thread(
+    mut file: File,
+    rx: Receiver<Syncer>,
+    dirty: Arc<AtomicBool>,
+    ev: Sender<Event>,
+    interval: Duration,
+) {
+    loop {
+        match rx.recv_timeout(interval) {
+            Ok(Syncer::NewFile(f)) => file = f,
+            Ok(Syncer::Stop) | Err(RecvTimeoutError::Disconnected) => {
+                // Graceful stop: everything written so far becomes durable.
+                if dirty.swap(false, Ordering::AcqRel) {
+                    if let Err(e) = file.sync_data() {
+                        let _ = ev.send(Event::Fatal(format!("wal fsync failed: {e}")));
+                    }
+                }
+                return;
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if dirty.swap(false, Ordering::AcqRel) {
+                    if let Err(e) = file.sync_data() {
+                        let _ = ev.send(Event::Fatal(format!("wal fsync failed: {e}")));
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum Syncer {
+    NewFile(File),
+    Stop,
+}
+
 fn wal_thread(
     mut wal: Wal,
     rx: Receiver<Persist>,
     done: Sender<Event>,
     abort: Arc<AtomicBool>,
     fsync: bool,
+    relaxed: Option<Duration>,
+) {
+    let dirty = Arc::new(AtomicBool::new(false));
+    let syncer = relaxed.and_then(|interval| {
+        let file = wal.sync_handle().ok()?;
+        let (tx, srx) = channel::<Syncer>();
+        let (d, ev) = (dirty.clone(), done.clone());
+        Some((
+            tx,
+            thread::spawn(move || syncer_thread(file, srx, d, ev, interval)),
+        ))
+    });
+    wal_loop(
+        &mut wal,
+        &rx,
+        &done,
+        &abort,
+        fsync && syncer.is_none(),
+        &dirty,
+        &syncer,
+    );
+    if let Some((tx, handle)) = syncer {
+        // A power cut (abort) must not flush what a real one would lose.
+        if !abort.load(Ordering::SeqCst) {
+            let _ = tx.send(Syncer::Stop);
+        } else {
+            drop(tx);
+            dirty.store(false, Ordering::SeqCst);
+        }
+        let _ = handle.join();
+    }
+}
+
+fn wal_loop(
+    wal: &mut Wal,
+    rx: &Receiver<Persist>,
+    done: &Sender<Event>,
+    abort: &AtomicBool,
+    fsync: bool,
+    dirty: &AtomicBool,
+    syncer: &Option<(Sender<Syncer>, thread::JoinHandle<()>)>,
 ) {
     while let Ok(first) = rx.recv() {
         if abort.load(Ordering::SeqCst) {
@@ -458,7 +553,9 @@ fn wal_thread(
         let r = if fsync {
             wal.sync()
         } else {
-            // Benchmark mode: hand to the OS but do not wait for the disk.
+            // Benchmark mode, or relaxed durability (the syncer flushes later):
+            // hand to the OS but do not wait for the disk.
+            dirty.store(true, Ordering::Release);
             wal.sync_no_fsync()
         };
         if let Err(e) = r {
@@ -474,6 +571,10 @@ fn wal_thread(
                 eprintln!("orderer-cluster: wal rewrite failed: {e}; stopping");
                 let _ = done.send(Event::Stop);
                 return;
+            }
+            // The rewrite replaced the file (and fsynced the new one).
+            if let (Some((tx, _)), Ok(f)) = (syncer, wal.sync_handle()) {
+                let _ = tx.send(Syncer::NewFile(f));
             }
         }
         let last = batch.last().expect("non-empty").token;

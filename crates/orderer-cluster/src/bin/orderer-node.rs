@@ -2,7 +2,7 @@
 //!
 //!   orderer-node --id N --members 0=HOST:PORT,1=HOST:PORT,... --client HOST:PORT
 //!                --dir DIR [--partitions P] [--compact-every N] [--digest-every N]
-//!                [--fsync on|off] [--audit] [--sm pipeline|recorder]
+//!                [--fsync on|off|relaxed[:MS]] [--audit] [--sm pipeline|recorder]
 //!
 //! `--audit` appends `(log index, first order id)` for every applied batch to
 //! `DIR/applied.log` (truncated at start, so it reflects this incarnation's
@@ -70,6 +70,7 @@ fn main() {
     );
     let (mut partitions, mut compact_every, mut digest_every, mut fsync, mut audit) =
         (2u32, 0u64, 0u64, true, false);
+    let mut fsync_interval: Option<std::time::Duration> = None;
     let mut sm_kind = String::from("pipeline");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -108,7 +109,30 @@ fn main() {
                     .parse()
                     .unwrap_or_else(|_| die("--digest-every"))
             }
-            "--fsync" => fsync = v("--fsync") == "on",
+            "--fsync" => {
+                let m = v("--fsync");
+                match m.as_str() {
+                    "on" | "off" => fsync = m == "on",
+                    _ => match m.strip_prefix("relaxed") {
+                        // Commits wait for the write, not the flush; a background
+                        // thread flushes about every MS (default 5).
+                        Some(rest) => {
+                            let ms = match rest {
+                                "" => 5,
+                                r => r
+                                    .strip_prefix(':')
+                                    .and_then(|x| x.parse::<u64>().ok())
+                                    .unwrap_or_else(|| {
+                                        die("--fsync relaxed:MS wants milliseconds")
+                                    }),
+                            };
+                            fsync = true;
+                            fsync_interval = Some(std::time::Duration::from_millis(ms));
+                        }
+                        None => die("--fsync wants on, off or relaxed[:MS]"),
+                    },
+                }
+            }
             "--audit" => audit = true,
             "--sm" => sm_kind = v("--sm"),
             other => die(&format!("unknown argument {other}")),
@@ -123,6 +147,7 @@ fn main() {
 
     let mut cfg = ReplicaConfig::new(id, members, format!("{dir}/state"));
     cfg.fsync = fsync;
+    cfg.fsync_interval = fsync_interval;
     cfg.compact_every = compact_every;
     cfg.digest_every = digest_every;
     cfg.max_pending = 1 << 16;

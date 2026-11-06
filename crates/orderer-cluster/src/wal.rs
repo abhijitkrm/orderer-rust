@@ -246,6 +246,13 @@ impl Wal {
         Ok(())
     }
 
+    /// A second handle on the current file, for a thread that fsyncs while
+    /// this one keeps writing. It goes stale when [`Wal::rewrite`] replaces
+    /// the file: take a new one then.
+    pub fn sync_handle(&self) -> io::Result<File> {
+        self.file.try_clone()
+    }
+
     pub fn len(&self) -> u64 {
         self.len
     }

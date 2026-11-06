@@ -554,3 +554,67 @@ fn a_slow_leader_state_machine_does_not_cost_it_leadership() {
     c.wait_applied(&[0], 3, Duration::from_secs(30));
     assert_eq!(c.wait_converged(Duration::from_secs(30)).len(), 3);
 }
+
+fn relaxed(cfg: &mut orderer_cluster::ReplicaConfig) {
+    cfg.fsync = true;
+    cfg.fsync_interval = Some(Duration::from_millis(20));
+}
+
+#[test]
+fn relaxed_fsync_leader_crash_loses_no_acknowledged_command() {
+    // A crashed process loses nothing it had written: commits wait for the
+    // write to reach the operating system, only the flush to disk is deferred.
+    let mut c = Cluster::new("relaxed-failover", 3, relaxed);
+    c.wait_leader(Duration::from_secs(5));
+    let mut acked = HashSet::new();
+    for i in 0..200u64 {
+        if c.propose(&payload(i)).is_ok() {
+            acked.insert(i);
+        }
+    }
+    let old = c.leader().unwrap();
+    c.crash(old);
+    for i in 200..500u64 {
+        if c.propose(&payload(i)).is_ok() {
+            acked.insert(i);
+        }
+    }
+    c.start(old);
+    let seq = c.wait_converged(Duration::from_secs(15));
+    let got: HashSet<u64> = seq
+        .iter()
+        .map(|p| u64::from_le_bytes(p[..8].try_into().unwrap()))
+        .collect();
+    assert_eq!(got.len(), seq.len(), "a command was applied twice");
+    for a in &acked {
+        assert!(got.contains(a), "acknowledged command {a} was lost");
+    }
+    assert!(acked.len() >= 400, "only {} acknowledged", acked.len());
+}
+
+#[test]
+fn relaxed_fsync_whole_cluster_restart_with_compaction() {
+    // A graceful stop flushes what is pending, and a compaction rewrite swaps
+    // the file under the background syncer, which must follow it.
+    let mut c = Cluster::new("relaxed-restart", 3, |cfg| {
+        relaxed(cfg);
+        cfg.compact_every = 50;
+    });
+    c.wait_leader(Duration::from_secs(5));
+    for i in 0..300 {
+        c.propose(&payload(i)).unwrap();
+    }
+    c.wait_converged(Duration::from_secs(10));
+    for i in 0..3 {
+        c.stop(i);
+    }
+    for i in 0..3 {
+        c.start(i);
+    }
+    c.wait_leader(Duration::from_secs(10));
+    for i in 300..400 {
+        c.propose(&payload(i)).unwrap();
+    }
+    let seq = c.wait_converged(Duration::from_secs(15));
+    assert_eq!(seq, (0..400).map(payload).collect::<Vec<_>>());
+}

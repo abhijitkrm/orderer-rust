@@ -3,7 +3,7 @@
 //!
 //!   clusterbench [--nodes N] [--groups G] [--sm noop|pipeline] [--partitions P]
 //!                [--batch CMDS] [--producers K] [--window W]
-//!                [--cmds TOTAL] [--fsync on|off] [--dir PATH]
+//!                [--cmds TOTAL] [--fsync on|off|relaxed[:MS]] [--dir PATH]
 //!                [--rate CMDS_PER_SEC | --sweep R1,R2,...] [--secs S] [--warmup S]
 //!
 //! G independent replicated groups of N nodes each (symbols sharded between
@@ -69,6 +69,7 @@ fn main() {
         (3usize, 1usize, "noop".to_string(), 2u32);
     let (mut batch, mut producers, mut window) = (1000usize, 2usize, 8usize);
     let (mut total, mut fsync, mut dir) = (20_000_000u64, true, String::new());
+    let mut fsync_interval: Option<Duration> = None;
     let (mut rates, mut secs, mut warmup) = (Vec::<f64>::new(), 5.0f64, 1.0f64);
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -95,7 +96,27 @@ fn main() {
             "--producers" => producers = num(v("--producers"), "--producers") as usize,
             "--window" => window = num(v("--window"), "--window") as usize,
             "--cmds" => total = num(v("--cmds"), "--cmds"),
-            "--fsync" => fsync = v("--fsync") == "on",
+            "--fsync" => {
+                let m = v("--fsync");
+                match m.as_str() {
+                    "on" | "off" => fsync = m == "on",
+                    _ => match m.strip_prefix("relaxed") {
+                        Some("") => {
+                            fsync = true;
+                            fsync_interval = Some(Duration::from_millis(5));
+                        }
+                        Some(ms) => {
+                            let ms = ms.strip_prefix(':').and_then(|x| x.parse::<u64>().ok());
+                            fsync = true;
+                            fsync_interval =
+                                Some(Duration::from_millis(ms.unwrap_or_else(|| {
+                                    die("--fsync relaxed:MS wants milliseconds")
+                                })));
+                        }
+                        None => die("--fsync wants on, off or relaxed[:MS]"),
+                    },
+                }
+            }
             "--dir" => dir = v("--dir"),
             "--rate" => rates = vec![fnum(v("--rate"), "--rate")],
             "--sweep" => {
@@ -109,6 +130,11 @@ fn main() {
             other => die(&format!("unknown argument {other}")),
         }
     }
+    let fsync_label = match (fsync, fsync_interval) {
+        (true, Some(d)) => format!("relaxed({}ms)", d.as_millis()),
+        (true, None) => "on".to_string(),
+        (false, _) => "off".to_string(),
+    };
     let dir = if dir.is_empty() {
         std::env::temp_dir().join(format!("clusterbench-{}", std::process::id()))
     } else {
@@ -141,6 +167,7 @@ fn main() {
                 ..Config::default()
             };
             cfg.fsync = fsync;
+            cfg.fsync_interval = fsync_interval;
             cfg.max_pending = 1 << 20;
             cfg.propose_timeout = Duration::from_secs(60);
             let r = match sm.as_str() {
@@ -189,7 +216,16 @@ fn main() {
 
     if !rates.is_empty() {
         open_loop(
-            &all, &leaders, groups, producers, batch, &sm, fsync, &rates, secs, warmup,
+            &all,
+            &leaders,
+            groups,
+            producers,
+            batch,
+            &sm,
+            &fsync_label,
+            &rates,
+            secs,
+            warmup,
         );
         drop(all);
         let _ = std::fs::remove_dir_all(&dir);
@@ -289,7 +325,7 @@ fn main() {
         "groups={groups} nodes={nodes} sm={sm} batch={batch} producers={producers}/group window={window} fsync={}: \
          {:.2}M cmds/s acked ({:.2}M per group), {:.2}M applied everywhere, {:.0} MB/s log payload, \
          mean batch latency {:.2} ms, {} cmds in {:.2}s",
-        if fsync { "on" } else { "off" },
+        fsync_label,
         done as f64 / secs / 1e6,
         done as f64 / secs / 1e6 / groups as f64,
         done as f64 / applied_secs / 1e6,
@@ -352,7 +388,7 @@ fn open_loop(
     producers: usize,
     batch: usize,
     sm: &str,
-    fsync: bool,
+    fsync: &str,
     rates: &[f64],
     secs: f64,
     warmup: f64,
@@ -362,7 +398,7 @@ fn open_loop(
         "open loop: groups={groups} nodes={} sm={sm} batch={batch} producers={producers}/group fsync={} \
          warmup={warmup}s measured={secs}s; latency = ack time minus time the batch was due",
         all[0].len(),
-        if fsync { "on" } else { "off" },
+        fsync,
     );
     println!(
         "{:>12} {:>12} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10} {:>10} {:>7} {:>7} {:>9}",

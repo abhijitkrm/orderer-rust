@@ -215,6 +215,7 @@ fn field(s: &str, k: &str) -> Option<String> {
 /// Wait until every node has applied everything committed and all agree.
 fn settle(clients: &[SocketAddr], timeout: u64) {
     let end = Instant::now() + Duration::from_secs(timeout);
+    let mut last = String::from("no poll completed (a node was unreachable)");
     loop {
         let mut rows = Vec::new();
         let mut ok = true;
@@ -223,7 +224,10 @@ fn settle(clients: &[SocketAddr], timeout: u64) {
                 .and_then(|mut c| c.status().and_then(|s| c.hash().map(|h| (s, h))))
             {
                 Ok((s, h)) => rows.push((s, h)),
-                Err(_) => ok = false,
+                Err(e) => {
+                    ok = false;
+                    last = format!("last poll: {a} failed: {e}");
+                }
             }
         }
         if ok && rows.len() == clients.len() {
@@ -240,6 +244,11 @@ fn settle(clients: &[SocketAddr], timeout: u64) {
                 println!("FAIL: a node halted");
                 exit(1);
             }
+            last = format!(
+                "last poll: applied {applied:?}, commit {commit:?}, state index {:?}, state digests {}",
+                hashes.iter().map(|h| h.map(|x| x.0)).collect::<Vec<_>>(),
+                if hashes.iter().all(|h| *h == hashes[0]) { "equal" } else { "DIFFER" }
+            );
             if applied.iter().all(|x| *x == applied[0])
                 && commit.iter().all(|x| *x == commit[0])
                 && applied == commit
@@ -256,8 +265,22 @@ fn settle(clients: &[SocketAddr], timeout: u64) {
             }
         }
         if Instant::now() > end {
-            println!("FAIL: nodes did not settle within {timeout}s");
+            println!("FAIL: nodes did not settle within {timeout}s ({last})");
             status(clients);
+            // And what each one says its state is, to tell "still catching up"
+            // from "disagree about the same index".
+            for a in clients {
+                match Conn::connect_with_key(*a, key_from_env().as_deref())
+                    .and_then(|mut c| c.hash())
+                {
+                    Ok(Some((i, d))) => println!(
+                        "{a}: state at index {i} = {}",
+                        orderer_cluster::sha256::hex(&d)
+                    ),
+                    Ok(None) => println!("{a}: no state hash"),
+                    Err(e) => println!("{a}: hash unavailable ({e})"),
+                }
+            }
             exit(1);
         }
         std::thread::sleep(Duration::from_millis(200));
