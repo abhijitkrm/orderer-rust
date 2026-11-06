@@ -1,0 +1,2478 @@
+node id=3 peers=0,1,2,3,4 election=10 heartbeat=2 batch=64 prevote=1 seed=34 disk=0:-:0:0:-
+in tick
+state role=Follower term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=0 leader=- commit=0 applied=0 base=0 last=0
+in propose 0100000000000000
+state role=Follower term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=0 leader=- commit=0 applied=0 base=0 last=0
+in propose 0200000000000000
+state role=Follower term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+out send 0 vote 1 0 0 1
+out send 1 vote 1 0 0 1
+out send 2 vote 1 0 0 1
+out send 4 vote 1 0 0 1
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in propose 0400000000000000
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in step 2 votereply 1 1 1
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in step 4 vote 1 0 0 1
+out send 4 votereply 1 1 1
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in step 1 vote 1 0 0 1
+out send 1 votereply 1 1 1
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in step 2 vote 1 0 0 1
+out send 2 votereply 1 1 1
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=0 leader=- commit=0 applied=0 base=0 last=0
+in step 1 votereply 1 1 1
+out persist 1 1 3 1 - -
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in persisted 1
+out send 0 vote 1 0 0 0
+out send 1 vote 1 0 0 0
+out send 2 vote 1 0 0 0
+out send 4 vote 1 0 0 0
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in step 0 vote 1 0 0 1
+out send 0 votereply 1 0 1
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in step 4 vote 1 0 0 0
+out send 4 votereply 1 0 0
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in step 1 vote 1 0 0 0
+out send 1 votereply 1 0 0
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in step 2 votereply 1 0 0
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in step 2 vote 1 0 0 0
+out send 2 votereply 1 0 0
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in step 0 votereply 1 0 0
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in step 1 votereply 1 0 0
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in step 1 vote 2 0 0 1
+out send 1 votereply 2 1 1
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in step 0 vote 2 0 0 1
+out send 0 votereply 2 1 1
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in step 4 vote 2 0 0 1
+out send 4 votereply 2 1 1
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Candidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+out send 0 vote 2 0 0 1
+out send 1 vote 2 0 0 1
+out send 2 vote 2 0 0 1
+out send 4 vote 2 0 0 1
+state role=PreCandidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in step 2 vote 2 0 0 1
+out send 2 votereply 2 1 1
+state role=PreCandidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=PreCandidate term=1 leader=- commit=0 applied=0 base=0 last=0
+in step 0 vote 2 0 0 0
+out persist 2 2 - 1 - -
+out persist 3 2 0 1 - -
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in step 4 votereply 2 0 1
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in persisted 2
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in step 2 votereply 2 1 1
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in persisted 3
+out send 0 votereply 2 1 0
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in step 0 votereply 2 0 1
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in propose 0a00000000000000
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in step 4 vote 3 0 0 1
+out send 4 votereply 3 1 1
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in step 1 votereply 2 0 1
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in step 0 vote 3 0 0 1
+out send 0 votereply 3 1 1
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=2 leader=- commit=0 applied=0 base=0 last=0
+in step 4 vote 3 0 0 0
+out persist 4 3 - 1 - -
+out persist 5 3 4 1 - -
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in step 4 vote 3 0 0 0
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in persisted 4
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in persisted 5
+out send 4 votereply 3 1 0
+out send 4 votereply 3 1 0
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in propose 0f00000000000000
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in step 2 vote 3 0 0 1
+out send 2 votereply 3 0 1
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=0
+in step 4 append 3 0 0 0 3:-
+out persist 6 3 4 1 - 3:-
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=1
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=1
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=1
+in step 4 append 3 1 3 0 -
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=1
+in step 4 append 3 1 3 0 -
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=1
+in step 4 append 3 1 3 0 -
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=1
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=1
+in persisted 6
+out send 4 appendreply 3 1 1
+out send 4 appendreply 3 1 1
+out send 4 appendreply 3 1 1
+out send 4 appendreply 3 1 1
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=1
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=1
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=1
+in step 4 append 3 1 3 0 3:1300000000000000
+out persist 7 3 4 2 - 3:1300000000000000
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=2
+in persisted 7
+out send 4 appendreply 3 1 2
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=2
+in step 4 append 3 1 3 0 -
+out send 4 appendreply 3 1 1
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=2
+in step 4 append 3 2 3 1 -
+out apply 1 3:-
+out send 4 appendreply 3 1 2
+state role=Follower term=3 leader=4 commit=1 applied=1 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=1 applied=1 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=1 applied=1 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=1 applied=1 base=0 last=2
+in step 4 append 3 2 3 1 -
+out send 4 appendreply 3 1 2
+state role=Follower term=3 leader=4 commit=1 applied=1 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=1 applied=1 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=1 applied=1 base=0 last=2
+in step 4 append 3 2 3 2 -
+out apply 2 3:1300000000000000
+out send 4 appendreply 3 1 2
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in step 4 append 3 2 3 2 -
+out send 4 appendreply 3 1 2
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in step 4 append 3 2 3 2 -
+out send 4 appendreply 3 1 2
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in step 4 append 3 2 3 2 -
+out send 4 appendreply 3 1 2
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=2
+in step 4 append 3 2 3 2 3:1500000000000000
+out persist 8 3 4 3 - 3:1500000000000000
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=3
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=3
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=3
+in persisted 8
+out send 4 appendreply 3 1 3
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=3
+in step 4 append 3 3 3 2 3:1600000000000000
+out persist 9 3 4 4 - 3:1600000000000000
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=4
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=4
+in persisted 9
+out send 4 appendreply 3 1 4
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=4
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=4
+in step 4 append 3 3 3 2 -
+out send 4 appendreply 3 1 3
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=4
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=4
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=4
+in step 4 append 3 3 3 2 -
+out send 4 appendreply 3 1 3
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=4
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=4
+in step 4 append 3 4 3 2 -
+out send 4 appendreply 3 1 4
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=4
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=4
+in tick
+state role=Follower term=3 leader=4 commit=2 applied=2 base=0 last=4
+in step 4 append 3 4 3 3 -
+out apply 3 3:1500000000000000
+out send 4 appendreply 3 1 4
+state role=Follower term=3 leader=4 commit=3 applied=3 base=0 last=4
+in tick
+state role=Follower term=3 leader=4 commit=3 applied=3 base=0 last=4
+in step 4 append 3 4 3 4 3:1700000000000000
+out persist 10 3 4 5 - 3:1700000000000000
+out apply 4 3:1600000000000000
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in step 4 append 3 5 3 4 -
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in propose 1800000000000000
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in step 4 append 3 4 3 3 -
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in step 4 append 3 5 3 4 -
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in persisted 10
+out send 4 appendreply 3 1 5
+out send 4 appendreply 3 1 5
+out send 4 appendreply 3 1 4
+out send 4 appendreply 3 1 5
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in step 4 append 3 5 3 4 -
+out send 4 appendreply 3 1 5
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in step 4 append 3 5 3 4 -
+out send 4 appendreply 3 1 5
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=4 applied=4 base=0 last=5
+in step 4 append 3 5 3 5 -
+out apply 5 3:1700000000000000
+out send 4 appendreply 3 1 5
+state role=Follower term=3 leader=4 commit=5 applied=5 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=5 applied=5 base=0 last=5
+in step 4 append 3 5 3 5 -
+out send 4 appendreply 3 1 5
+state role=Follower term=3 leader=4 commit=5 applied=5 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=5 applied=5 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=5 applied=5 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=5 applied=5 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=5 applied=5 base=0 last=5
+node id=3 peers=0,1,2,3,4 election=10 heartbeat=2 batch=64 prevote=1 seed=12693803343368873900 disk=3:4:0:0:3:-,3:1300000000000000,3:1500000000000000,3:1600000000000000,3:1700000000000000
+in tick
+state role=Follower term=3 leader=- commit=0 applied=0 base=0 last=5
+in step 4 append 3 7 3 6 -
+out send 4 appendreply 3 0 5
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=5
+in step 4 append 3 7 3 6 -
+out send 4 appendreply 3 0 5
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=5
+in step 4 append 3 7 3 6 -
+out send 4 appendreply 3 0 5
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=5
+in step 4 append 3 7 3 6 -
+out send 4 appendreply 3 0 5
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=5
+in step 4 append 3 7 3 6 -
+out send 4 appendreply 3 0 5
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=5
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=5
+in propose 2300000000000000
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=5
+in step 4 append 3 7 3 6 -
+out send 4 appendreply 3 0 5
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=5
+in step 4 append 3 5 3 7 3:1d00000000000000,3:1f00000000000000
+out persist 1 3 4 6 - 3:1d00000000000000,3:1f00000000000000
+out apply 1 3:-
+out apply 2 3:1300000000000000
+out apply 3 3:1500000000000000
+out apply 4 3:1600000000000000
+out apply 5 3:1700000000000000
+out apply 6 3:1d00000000000000
+out apply 7 3:1f00000000000000
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=7
+in tick
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=7
+in step 4 append 3 7 3 7 -
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=7
+in tick
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=7
+in step 4 append 3 5 3 7 3:1d00000000000000,3:1f00000000000000
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=7
+in tick
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=7
+in persisted 1
+out send 4 appendreply 3 1 7
+out send 4 appendreply 3 1 7
+out send 4 appendreply 3 1 7
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=7
+in tick
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=7
+in step 4 append 3 5 3 7 3:1d00000000000000,3:1f00000000000000
+out send 4 appendreply 3 1 7
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=7
+in step 4 append 3 5 3 7 3:1d00000000000000,3:1f00000000000000
+out send 4 appendreply 3 1 7
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=7
+in tick
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=7
+in step 4 append 3 5 3 7 3:1d00000000000000,3:1f00000000000000,3:2400000000000000
+out persist 2 3 4 8 - 3:2400000000000000
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=8
+in persisted 2
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=8
+in step 4 append 3 7 3 7 -
+out send 4 appendreply 3 1 7
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=8
+in step 4 append 3 7 3 7 3:2400000000000000
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=8
+in step 4 append 3 8 3 7 -
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=8
+in step 4 append 3 8 3 7 -
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=7 applied=7 base=0 last=8
+in step 4 append 3 8 3 8 -
+out apply 8 3:2400000000000000
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in step 4 append 3 8 3 8 -
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in step 4 append 3 8 3 8 -
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in propose 2a00000000000000
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in step 4 append 3 8 3 8 -
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in step 4 append 3 8 3 8 -
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in propose 2e00000000000000
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in step 4 append 3 8 3 8 -
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in step 4 append 3 8 3 8 -
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in propose 2f00000000000000
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in step 4 append 3 8 3 8 -
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in step 4 append 3 8 3 8 -
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in step 4 append 3 8 3 8 -
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in step 4 append 3 8 3 8 -
+out send 4 appendreply 3 1 8
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in step 4 append 3 9 3 8 -
+out send 4 appendreply 3 0 8
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in propose 3100000000000000
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=8
+in step 4 append 3 8 3 8 3:3000000000000000
+out persist 3 3 4 9 - 3:3000000000000000
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=9
+in step 4 append 3 9 3 8 -
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=9
+in step 4 append 3 9 3 8 -
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=9
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=9
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=9
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=9
+in persisted 3
+out send 4 appendreply 3 1 9
+out send 4 appendreply 3 1 9
+out send 4 appendreply 3 1 9
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=9
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=9
+in step 4 append 3 9 3 8 3:3300000000000000
+out persist 4 3 4 10 - 3:3300000000000000
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=10
+in step 4 append 3 10 3 8 -
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=10
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=10
+in step 4 append 3 10 3 8 -
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=10
+in step 4 append 3 10 3 8 3:3500000000000000
+out persist 5 3 4 11 - 3:3500000000000000
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=11
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=11
+in step 4 append 3 10 3 8 -
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=11
+in step 4 append 3 8 3 8 3:3000000000000000,3:3300000000000000
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=11
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=11
+in tick
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=11
+in persisted 4
+out send 4 appendreply 3 1 10
+out send 4 appendreply 3 1 10
+out send 4 appendreply 3 1 10
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=11
+in persisted 5
+out send 4 appendreply 3 1 11
+out send 4 appendreply 3 1 10
+out send 4 appendreply 3 1 10
+state role=Follower term=3 leader=4 commit=8 applied=8 base=0 last=11
+in step 4 append 3 11 3 9 -
+out apply 9 3:3000000000000000
+out send 4 appendreply 3 1 11
+state role=Follower term=3 leader=4 commit=9 applied=9 base=0 last=11
+in tick
+state role=Follower term=3 leader=4 commit=9 applied=9 base=0 last=11
+in step 4 append 3 11 3 8 -
+out send 4 appendreply 3 1 11
+state role=Follower term=3 leader=4 commit=9 applied=9 base=0 last=11
+in tick
+state role=Follower term=3 leader=4 commit=9 applied=9 base=0 last=11
+in tick
+state role=Follower term=3 leader=4 commit=9 applied=9 base=0 last=11
+in propose 3800000000000000
+state role=Follower term=3 leader=4 commit=9 applied=9 base=0 last=11
+in tick
+state role=Follower term=3 leader=4 commit=9 applied=9 base=0 last=11
+in step 4 append 3 11 3 11 -
+out apply 10 3:3300000000000000
+out apply 11 3:3500000000000000
+out send 4 appendreply 3 1 11
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=11
+in step 4 append 3 11 3 11 -
+out send 4 appendreply 3 1 11
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=11
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=11
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=11
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=11
+in step 4 append 3 11 3 11 -
+out send 4 appendreply 3 1 11
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=11
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=11
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=11
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=11
+in step 4 append 3 11 3 11 3:3900000000000000
+out persist 6 3 4 12 - 3:3900000000000000
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in step 4 append 3 12 3 11 -
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in propose 3a00000000000000
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in step 4 append 3 11 3 11 -
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in step 4 append 3 11 3 11 -
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in persisted 6
+out send 4 appendreply 3 1 12
+out send 4 appendreply 3 1 12
+out send 4 appendreply 3 1 11
+out send 4 appendreply 3 1 11
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in step 4 append 3 12 3 11 -
+out send 4 appendreply 3 1 12
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in step 4 append 3 12 3 11 -
+out send 4 appendreply 3 1 12
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in step 4 append 3 12 3 11 -
+out send 4 appendreply 3 1 12
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in step 4 append 3 12 3 11 -
+out send 4 appendreply 3 1 12
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in step 4 append 3 12 3 11 -
+out send 4 appendreply 3 1 12
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=11 applied=11 base=0 last=12
+in step 4 append 3 12 3 12 -
+out apply 12 3:3900000000000000
+out send 4 appendreply 3 1 12
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=12
+in step 4 append 3 12 3 12 -
+out send 4 appendreply 3 1 12
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=12
+in propose 3d00000000000000
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=12
+in step 4 append 3 12 3 12 -
+out send 4 appendreply 3 1 12
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=12
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=12
+in propose 3f00000000000000
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=12
+in step 4 append 3 12 3 12 3:3e00000000000000
+out persist 7 3 4 13 - 3:3e00000000000000
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in persisted 7
+out send 4 appendreply 3 1 13
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in step 4 append 3 13 3 12 -
+out send 4 appendreply 3 1 13
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in step 4 append 3 14 3 12 -
+out send 4 appendreply 3 0 13
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in step 4 append 3 14 3 12 -
+out send 4 appendreply 3 0 13
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in step 4 append 3 14 3 12 -
+out send 4 appendreply 3 0 13
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in step 4 append 3 14 3 12 -
+out send 4 appendreply 3 0 13
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=13
+in step 4 append 3 13 3 12 3:4000000000000000
+out persist 8 3 4 14 - 3:4000000000000000
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in step 4 append 3 14 3 12 -
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in step 4 append 3 14 3 12 -
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in step 4 append 3 13 3 12 3:4000000000000000
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in persisted 8
+out send 4 appendreply 3 1 14
+out send 4 appendreply 3 1 14
+out send 4 appendreply 3 1 14
+out send 4 appendreply 3 1 14
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in propose 4500000000000000
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in step 4 append 3 15 3 13 -
+out send 4 appendreply 3 0 14
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in tick
+state role=Follower term=3 leader=4 commit=12 applied=12 base=0 last=14
+in step 4 append 3 13 3 13 3:4000000000000000,3:4300000000000000
+out persist 9 3 4 15 - 3:4300000000000000
+out apply 13 3:3e00000000000000
+state role=Follower term=3 leader=4 commit=13 applied=13 base=0 last=15
+in step 4 append 3 15 3 13 -
+state role=Follower term=3 leader=4 commit=13 applied=13 base=0 last=15
+in tick
+state role=Follower term=3 leader=4 commit=13 applied=13 base=0 last=15
+in step 4 append 3 15 3 14 -
+out apply 14 3:4000000000000000
+state role=Follower term=3 leader=4 commit=14 applied=14 base=0 last=15
+in step 4 append 3 15 3 14 -
+state role=Follower term=3 leader=4 commit=14 applied=14 base=0 last=15
+in tick
+state role=Follower term=3 leader=4 commit=14 applied=14 base=0 last=15
+in persisted 9
+out send 4 appendreply 3 1 15
+out send 4 appendreply 3 1 15
+out send 4 appendreply 3 1 15
+out send 4 appendreply 3 1 15
+state role=Follower term=3 leader=4 commit=14 applied=14 base=0 last=15
+in tick
+state role=Follower term=3 leader=4 commit=14 applied=14 base=0 last=15
+in tick
+state role=Follower term=3 leader=4 commit=14 applied=14 base=0 last=15
+in step 4 append 3 15 3 14 -
+out send 4 appendreply 3 1 15
+state role=Follower term=3 leader=4 commit=14 applied=14 base=0 last=15
+in tick
+state role=Follower term=3 leader=4 commit=14 applied=14 base=0 last=15
+in step 4 append 3 15 3 14 -
+out send 4 appendreply 3 1 15
+state role=Follower term=3 leader=4 commit=14 applied=14 base=0 last=15
+in tick
+state role=Follower term=3 leader=4 commit=14 applied=14 base=0 last=15
+in tick
+state role=Follower term=3 leader=4 commit=14 applied=14 base=0 last=15
+in step 4 append 3 15 3 15 -
+out apply 15 3:4300000000000000
+out send 4 appendreply 3 1 15
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=15
+in tick
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=15
+in tick
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=15
+in step 4 append 3 15 3 15 3:4800000000000000
+out persist 10 3 4 16 - 3:4800000000000000
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=16
+in tick
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=16
+in persisted 10
+out send 4 appendreply 3 1 16
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=16
+in tick
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=16
+in step 4 append 3 16 3 15 -
+out send 4 appendreply 3 1 16
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=16
+in tick
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=16
+in step 4 append 3 16 3 15 -
+out send 4 appendreply 3 1 16
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=16
+in tick
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=16
+in tick
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=16
+in step 4 append 3 16 3 15 3:4900000000000000
+out persist 11 3 4 17 - 3:4900000000000000
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=17
+in step 4 append 3 17 3 15 3:4a00000000000000
+out persist 12 3 4 18 - 3:4a00000000000000
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=18
+in persisted 11
+out send 4 appendreply 3 1 17
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=18
+in persisted 12
+out send 4 appendreply 3 1 18
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=18
+in step 4 append 3 17 3 15 -
+out send 4 appendreply 3 1 17
+state role=Follower term=3 leader=4 commit=15 applied=15 base=0 last=18
+in step 4 append 3 18 3 16 -
+out apply 16 3:4800000000000000
+out send 4 appendreply 3 1 18
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in step 4 append 3 18 3 16 -
+out send 4 appendreply 3 1 18
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in step 4 append 3 18 3 16 -
+out send 4 appendreply 3 1 18
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in step 4 append 3 18 3 16 -
+out send 4 appendreply 3 1 18
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in propose 4e00000000000000
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in step 4 append 3 18 3 16 -
+out send 4 appendreply 3 1 18
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in step 4 append 3 18 3 16 -
+out send 4 appendreply 3 1 18
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in tick
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=18
+in step 4 append 3 18 3 16 3:4f00000000000000
+out persist 13 3 4 19 - 3:4f00000000000000
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=16 applied=16 base=0 last=19
+in step 4 append 3 19 3 18 -
+out apply 17 3:4900000000000000
+out apply 18 3:4a00000000000000
+state role=Follower term=3 leader=4 commit=18 applied=18 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=18 applied=18 base=0 last=19
+in persisted 13
+out send 4 appendreply 3 1 19
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=18 applied=18 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=18 applied=18 base=0 last=19
+in propose 5200000000000000
+state role=Follower term=3 leader=4 commit=18 applied=18 base=0 last=19
+in step 4 append 3 19 3 18 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=18 applied=18 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=18 applied=18 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=18 applied=18 base=0 last=19
+in step 4 append 3 19 3 18 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=18 applied=18 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=18 applied=18 base=0 last=19
+in step 4 append 3 19 3 19 -
+out apply 19 3:4f00000000000000
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in propose 5300000000000000
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 19 3 19 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 19 3 19 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 19 3 19 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 19 3 19 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 19 3 19 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 19 3 19 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 19 3 19 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 19 3 19 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 19 3 19 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 19 3 19 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 19 3 19 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 19 3 19 -
+out send 4 appendreply 3 1 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 20 3 19 3:5b00000000000000
+out send 4 appendreply 3 0 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 20 3 19 -
+out send 4 appendreply 3 0 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 21 3 19 -
+out send 4 appendreply 3 0 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 21 3 19 -
+out send 4 appendreply 3 0 19
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=19
+in step 4 append 3 19 3 19 3:5900000000000000,3:5b00000000000000
+out persist 14 3 4 20 - 3:5900000000000000,3:5b00000000000000
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in step 4 append 3 21 3 19 -
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in propose 5d00000000000000
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in persisted 14
+out send 4 appendreply 3 1 21
+out send 4 appendreply 3 1 21
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in step 4 append 3 19 3 19 3:5900000000000000,3:5b00000000000000
+out send 4 appendreply 3 1 21
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in step 4 append 3 19 3 19 3:5900000000000000,3:5b00000000000000
+out send 4 appendreply 3 1 21
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in step 4 append 3 21 3 19 -
+out send 4 appendreply 3 1 21
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in step 4 append 3 19 3 19 3:5900000000000000,3:5b00000000000000
+out send 4 appendreply 3 1 21
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=21
+in step 4 append 3 21 3 19 3:5f00000000000000
+out persist 15 3 4 22 - 3:5f00000000000000
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=22
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=22
+in step 4 append 3 22 3 19 -
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=22
+in tick
+state role=Follower term=3 leader=4 commit=19 applied=19 base=0 last=22
+node id=3 peers=0,1,2,3,4 election=10 heartbeat=2 batch=64 prevote=1 seed=2561931842097563205 disk=3:4:0:0:3:-,3:1300000000000000,3:1500000000000000,3:1600000000000000,3:1700000000000000,3:1d00000000000000,3:1f00000000000000,3:2400000000000000,3:3000000000000000,3:3300000000000000,3:3500000000000000,3:3900000000000000,3:3e00000000000000,3:4000000000000000,3:4300000000000000,3:4800000000000000,3:4900000000000000,3:4a00000000000000,3:4f00000000000000,3:5900000000000000,3:5b00000000000000,3:5f00000000000000
+in step 4 append 3 24 3 24 -
+out send 4 appendreply 3 0 22
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in step 4 append 3 24 3 24 -
+out send 4 appendreply 3 0 22
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in step 4 append 3 24 3 24 -
+out send 4 appendreply 3 0 22
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in step 4 append 3 24 3 24 -
+out send 4 appendreply 3 0 22
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in step 4 append 3 24 3 24 -
+out send 4 appendreply 3 0 22
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in tick
+state role=Follower term=3 leader=4 commit=0 applied=0 base=0 last=22
+in step 4 append 3 22 3 24 3:6300000000000000,3:6b00000000000000
+out persist 1 3 4 23 - 3:6300000000000000,3:6b00000000000000
+out apply 1 3:-
+out apply 2 3:1300000000000000
+out apply 3 3:1500000000000000
+out apply 4 3:1600000000000000
+out apply 5 3:1700000000000000
+out apply 6 3:1d00000000000000
+out apply 7 3:1f00000000000000
+out apply 8 3:2400000000000000
+out apply 9 3:3000000000000000
+out apply 10 3:3300000000000000
+out apply 11 3:3500000000000000
+out apply 12 3:3900000000000000
+out apply 13 3:3e00000000000000
+out apply 14 3:4000000000000000
+out apply 15 3:4300000000000000
+out apply 16 3:4800000000000000
+out apply 17 3:4900000000000000
+out apply 18 3:4a00000000000000
+out apply 19 3:4f00000000000000
+out apply 20 3:5900000000000000
+out apply 21 3:5b00000000000000
+out apply 22 3:5f00000000000000
+out apply 23 3:6300000000000000
+out apply 24 3:6b00000000000000
+state role=Follower term=3 leader=4 commit=24 applied=24 base=0 last=24
+in step 4 append 3 22 3 24 3:6300000000000000,3:6b00000000000000
+state role=Follower term=3 leader=4 commit=24 applied=24 base=0 last=24
+in step 4 append 3 24 3 24 -
+state role=Follower term=3 leader=4 commit=24 applied=24 base=0 last=24
+in tick
+state role=Follower term=3 leader=4 commit=24 applied=24 base=0 last=24
+in tick
+state role=Follower term=3 leader=4 commit=24 applied=24 base=0 last=24
+in persisted 1
+out send 4 appendreply 3 1 24
+out send 4 appendreply 3 1 24
+out send 4 appendreply 3 1 24
+state role=Follower term=3 leader=4 commit=24 applied=24 base=0 last=24
+in step 4 append 3 25 3 25 -
+out send 4 appendreply 3 0 24
+state role=Follower term=3 leader=4 commit=24 applied=24 base=0 last=24
+in tick
+state role=Follower term=3 leader=4 commit=24 applied=24 base=0 last=24
+in step 4 append 3 25 3 25 3:7000000000000000
+out send 4 appendreply 3 0 24
+state role=Follower term=3 leader=4 commit=24 applied=24 base=0 last=24
+in step 4 append 3 25 3 25 3:7000000000000000
+out send 4 appendreply 3 0 24
+state role=Follower term=3 leader=4 commit=24 applied=24 base=0 last=24
+in tick
+state role=Follower term=3 leader=4 commit=24 applied=24 base=0 last=24
+in propose 7100000000000000
+state role=Follower term=3 leader=4 commit=24 applied=24 base=0 last=24
+in step 4 append 3 22 3 24 3:6300000000000000,3:6b00000000000000,3:6f00000000000000
+out persist 2 3 4 25 - 3:6f00000000000000
+state role=Follower term=3 leader=4 commit=24 applied=24 base=0 last=25
+in step 4 append 3 24 3 25 3:6f00000000000000,3:7000000000000000
+out persist 3 3 4 26 - 3:7000000000000000
+out apply 25 3:6f00000000000000
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in persisted 2
+out send 4 appendreply 3 1 25
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in persisted 3
+out send 4 appendreply 3 1 26
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in step 4 append 3 24 3 25 3:6f00000000000000,3:7000000000000000
+out send 4 appendreply 3 1 26
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in step 4 append 3 22 3 24 3:6300000000000000,3:6b00000000000000,3:6f00000000000000
+out send 4 appendreply 3 1 25
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in step 4 append 3 26 3 25 -
+out send 4 appendreply 3 1 26
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in step 4 append 3 26 3 25 -
+out send 4 appendreply 3 1 26
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=25 applied=25 base=0 last=26
+in step 4 append 3 24 3 26 3:6f00000000000000,3:7000000000000000
+out apply 26 3:7000000000000000
+out send 4 appendreply 3 1 26
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in step 4 append 3 26 3 26 -
+out send 4 appendreply 3 1 26
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in step 4 append 3 26 3 26 -
+out send 4 appendreply 3 1 26
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in step 4 append 3 26 3 26 -
+out send 4 appendreply 3 1 26
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in propose 7400000000000000
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in step 4 append 3 26 3 26 -
+out send 4 appendreply 3 1 26
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in step 4 append 3 26 3 26 -
+out send 4 appendreply 3 1 26
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in step 4 append 3 26 3 26 -
+out send 4 appendreply 3 1 26
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in step 4 append 3 26 3 26 -
+out send 4 appendreply 3 1 26
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in step 4 append 3 26 3 26 -
+out send 4 appendreply 3 1 26
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in propose 7800000000000000
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=26
+in step 4 append 3 26 3 26 3:7700000000000000
+out persist 4 3 4 27 - 3:7700000000000000
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in step 4 append 3 27 3 26 -
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in persisted 4
+out send 4 appendreply 3 1 27
+out send 4 appendreply 3 1 27
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in step 4 append 3 27 3 26 -
+out send 4 appendreply 3 1 27
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in propose 7900000000000000
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in step 4 append 3 27 3 26 -
+out send 4 appendreply 3 1 27
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in propose 7a00000000000000
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in step 4 append 3 27 3 26 -
+out send 4 appendreply 3 1 27
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in step 4 append 3 27 3 26 -
+out send 4 appendreply 3 1 27
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in propose 7b00000000000000
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in step 4 append 3 27 3 26 -
+out send 4 appendreply 3 1 27
+state role=Follower term=3 leader=4 commit=26 applied=26 base=0 last=27
+in step 4 append 3 27 3 27 -
+out apply 27 3:7700000000000000
+out send 4 appendreply 3 1 27
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in step 4 append 3 27 3 27 -
+out send 4 appendreply 3 1 27
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in step 4 append 3 27 3 27 -
+out send 4 appendreply 3 1 27
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in step 4 append 3 27 3 27 -
+out send 4 appendreply 3 1 27
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in step 4 append 3 27 3 27 -
+out send 4 appendreply 3 1 27
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=27
+in step 4 append 3 27 3 27 3:7c00000000000000
+out persist 5 3 4 28 - 3:7c00000000000000
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in step 4 append 3 27 3 27 -
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in step 4 append 3 28 3 27 -
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in persisted 5
+out send 4 appendreply 3 1 28
+out send 4 appendreply 3 1 27
+out send 4 appendreply 3 1 28
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in propose 8000000000000000
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in step 4 append 3 29 3 27 -
+out send 4 appendreply 3 0 28
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in propose 8100000000000000
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in step 4 append 3 28 3 27 -
+out send 4 appendreply 3 1 28
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=28
+in step 4 append 3 28 3 27 3:7e00000000000000
+out persist 6 3 4 29 - 3:7e00000000000000
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=29
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=29
+in persisted 6
+out send 4 appendreply 3 1 29
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=29
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=29
+in step 4 append 3 29 3 27 3:7f00000000000000
+out persist 7 3 4 30 - 3:7f00000000000000
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=30
+in step 4 append 3 30 3 27 -
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=30
+in step 4 append 3 30 3 27 3:8200000000000000
+out persist 8 3 4 31 - 3:8200000000000000
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=31
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=31
+in propose 8300000000000000
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=31
+in persisted 7
+out send 4 appendreply 3 1 30
+out send 4 appendreply 3 1 30
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=31
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=31
+in step 4 append 3 30 3 27 -
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=31
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=31
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=31
+in persisted 8
+out send 4 appendreply 3 1 31
+out send 4 appendreply 3 1 30
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=31
+in tick
+state role=Follower term=3 leader=4 commit=27 applied=27 base=0 last=31
+in step 4 append 3 31 3 28 -
+out apply 28 3:7c00000000000000
+out send 4 appendreply 3 1 31
+state role=Follower term=3 leader=4 commit=28 applied=28 base=0 last=31
+in step 4 append 3 31 3 29 3:8400000000000000
+out persist 9 3 4 32 - 3:8400000000000000
+out apply 29 3:7e00000000000000
+state role=Follower term=3 leader=4 commit=29 applied=29 base=0 last=32
+in tick
+state role=Follower term=3 leader=4 commit=29 applied=29 base=0 last=32
+in persisted 9
+out send 4 appendreply 3 1 32
+state role=Follower term=3 leader=4 commit=29 applied=29 base=0 last=32
+in step 4 append 3 32 3 29 -
+out send 4 appendreply 3 1 32
+state role=Follower term=3 leader=4 commit=29 applied=29 base=0 last=32
+in step 4 append 3 28 3 29 3:7e00000000000000,3:7f00000000000000,3:8200000000000000,3:8400000000000000
+out send 4 appendreply 3 1 32
+state role=Follower term=3 leader=4 commit=29 applied=29 base=0 last=32
+in tick
+state role=Follower term=3 leader=4 commit=29 applied=29 base=0 last=32
+in step 4 append 3 31 3 29 3:8400000000000000
+out send 4 appendreply 3 1 32
+state role=Follower term=3 leader=4 commit=29 applied=29 base=0 last=32
+in tick
+state role=Follower term=3 leader=4 commit=29 applied=29 base=0 last=32
+in step 4 append 3 32 3 30 -
+out apply 30 3:7f00000000000000
+out send 4 appendreply 3 1 32
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=32
+in tick
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=32
+in tick
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=32
+in step 4 append 3 32 3 30 3:8500000000000000
+out persist 10 3 4 33 - 3:8500000000000000
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=33
+in tick
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=33
+in step 4 append 3 33 3 30 -
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=33
+in tick
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=33
+in tick
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=33
+in step 4 append 3 33 3 30 -
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=33
+in tick
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=33
+in persisted 10
+out send 4 appendreply 3 1 33
+out send 4 appendreply 3 1 33
+out send 4 appendreply 3 1 33
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=33
+in tick
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=33
+in tick
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=33
+in step 4 append 3 33 3 30 -
+out send 4 appendreply 3 1 33
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=33
+in tick
+state role=Follower term=3 leader=4 commit=30 applied=30 base=0 last=33
+in step 4 append 3 33 3 31 -
+out apply 31 3:8200000000000000
+out send 4 appendreply 3 1 33
+state role=Follower term=3 leader=4 commit=31 applied=31 base=0 last=33
+in tick
+state role=Follower term=3 leader=4 commit=31 applied=31 base=0 last=33
+in tick
+state role=Follower term=3 leader=4 commit=31 applied=31 base=0 last=33
+in tick
+state role=Follower term=3 leader=4 commit=31 applied=31 base=0 last=33
+in step 4 append 3 33 3 32 -
+out apply 32 3:8400000000000000
+out send 4 appendreply 3 1 33
+state role=Follower term=3 leader=4 commit=32 applied=32 base=0 last=33
+in tick
+state role=Follower term=3 leader=4 commit=32 applied=32 base=0 last=33
+in step 4 append 3 33 3 32 -
+out send 4 appendreply 3 1 33
+state role=Follower term=3 leader=4 commit=32 applied=32 base=0 last=33
+in tick
+state role=Follower term=3 leader=4 commit=32 applied=32 base=0 last=33
+in step 4 append 3 33 3 33 3:8800000000000000
+out persist 11 3 4 34 - 3:8800000000000000
+out apply 33 3:8500000000000000
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=34
+in tick
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=34
+in persisted 11
+out send 4 appendreply 3 1 34
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=34
+in step 4 append 3 33 3 33 -
+out send 4 appendreply 3 1 33
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=34
+in tick
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=34
+in step 4 append 3 33 3 32 -
+out send 4 appendreply 3 1 33
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=34
+in tick
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=34
+in tick
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=34
+in step 4 append 3 34 3 33 -
+out send 4 appendreply 3 1 34
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=34
+in tick
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=34
+in step 4 append 3 34 3 33 -
+out send 4 appendreply 3 1 34
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=34
+in tick
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=34
+in tick
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=34
+in step 4 append 3 34 3 33 3:8a00000000000000
+out persist 12 3 4 35 - 3:8a00000000000000
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=35
+in tick
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=35
+in step 4 append 3 34 3 33 -
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=35
+in tick
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=35
+in persisted 12
+out send 4 appendreply 3 1 35
+out send 4 appendreply 3 1 34
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=35
+in tick
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=35
+in step 4 append 3 35 3 33 -
+out send 4 appendreply 3 1 35
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=35
+in tick
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=35
+in propose 8c00000000000000
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=35
+in step 4 append 3 35 3 33 3:8b00000000000000
+out persist 13 3 4 36 - 3:8b00000000000000
+state role=Follower term=3 leader=4 commit=33 applied=33 base=0 last=36
+in step 4 append 3 36 3 34 -
+out apply 34 3:8800000000000000
+state role=Follower term=3 leader=4 commit=34 applied=34 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=34 applied=34 base=0 last=36
+in step 4 append 3 36 3 33 -
+state role=Follower term=3 leader=4 commit=34 applied=34 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=34 applied=34 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=34 applied=34 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=34 applied=34 base=0 last=36
+in persisted 13
+out send 4 appendreply 3 1 36
+out send 4 appendreply 3 1 36
+out send 4 appendreply 3 1 36
+state role=Follower term=3 leader=4 commit=34 applied=34 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=34 applied=34 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=34 applied=34 base=0 last=36
+in step 4 append 3 36 3 35 -
+out apply 35 3:8a00000000000000
+out send 4 appendreply 3 1 36
+state role=Follower term=3 leader=4 commit=35 applied=35 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=35 applied=35 base=0 last=36
+in step 4 append 3 36 3 35 -
+out send 4 appendreply 3 1 36
+state role=Follower term=3 leader=4 commit=35 applied=35 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=35 applied=35 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=35 applied=35 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=35 applied=35 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=35 applied=35 base=0 last=36
+in step 4 append 3 36 3 36 -
+out apply 36 3:8b00000000000000
+out send 4 appendreply 3 1 36
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=36
+in step 4 append 3 36 3 36 -
+out send 4 appendreply 3 1 36
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=36
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=36
+in step 4 append 3 36 3 36 3:9000000000000000
+out persist 14 3 4 37 - 3:9000000000000000
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=37
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=37
+in step 4 append 3 37 3 36 3:9100000000000000
+out persist 15 3 4 38 - 3:9100000000000000
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in step 4 append 3 38 3 36 -
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in step 4 append 3 37 3 36 -
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in persisted 14
+out send 4 appendreply 3 1 37
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in persisted 15
+out send 4 appendreply 3 1 38
+out send 4 appendreply 3 1 38
+out send 4 appendreply 3 1 37
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in step 4 append 3 38 3 36 -
+out send 4 appendreply 3 1 38
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in step 4 append 3 38 3 36 -
+out send 4 appendreply 3 1 38
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in step 4 append 3 38 3 36 -
+out send 4 appendreply 3 1 38
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in tick
+state role=Follower term=3 leader=4 commit=36 applied=36 base=0 last=38
+in step 4 append 3 38 3 37 -
+out apply 37 3:9000000000000000
+out send 4 appendreply 3 1 38
+state role=Follower term=3 leader=4 commit=37 applied=37 base=0 last=38
+in tick
+state role=Follower term=3 leader=4 commit=37 applied=37 base=0 last=38
+in step 4 append 3 38 3 38 -
+out apply 38 3:9100000000000000
+out send 4 appendreply 3 1 38
+state role=Follower term=3 leader=4 commit=38 applied=38 base=0 last=38
+in tick
+state role=Follower term=3 leader=4 commit=38 applied=38 base=0 last=38
+in tick
+state role=Follower term=3 leader=4 commit=38 applied=38 base=0 last=38
+in tick
+state role=Follower term=3 leader=4 commit=38 applied=38 base=0 last=38
+in step 4 append 3 38 3 38 3:9300000000000000
+out persist 16 3 4 39 - 3:9300000000000000
+state role=Follower term=3 leader=4 commit=38 applied=38 base=0 last=39
+in tick
+state role=Follower term=3 leader=4 commit=38 applied=38 base=0 last=39
+in step 4 append 3 39 3 38 -
+state role=Follower term=3 leader=4 commit=38 applied=38 base=0 last=39
+in tick
+state role=Follower term=3 leader=4 commit=38 applied=38 base=0 last=39
+in tick
+state role=Follower term=3 leader=4 commit=38 applied=38 base=0 last=39
+in persisted 16
+out send 4 appendreply 3 1 39
+out send 4 appendreply 3 1 39
+state role=Follower term=3 leader=4 commit=38 applied=38 base=0 last=39
+in step 4 append 3 39 3 38 -
+out send 4 appendreply 3 1 39
+state role=Follower term=3 leader=4 commit=38 applied=38 base=0 last=39
+in tick
+state role=Follower term=3 leader=4 commit=38 applied=38 base=0 last=39
+in tick
+state role=Follower term=3 leader=4 commit=38 applied=38 base=0 last=39
+in step 4 append 3 39 3 39 3:9500000000000000
+out persist 17 3 4 40 - 3:9500000000000000
+out apply 39 3:9300000000000000
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in tick
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in tick
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in step 4 append 3 39 3 38 -
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in tick
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in persisted 17
+out send 4 appendreply 3 1 40
+out send 4 appendreply 3 1 39
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in tick
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in step 4 append 3 39 3 39 -
+out send 4 appendreply 3 1 39
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in tick
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in step 4 append 3 41 3 39 -
+out send 4 appendreply 3 0 40
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in tick
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in step 4 append 3 40 3 39 -
+out send 4 appendreply 3 1 40
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in step 4 append 3 40 3 39 -
+out send 4 appendreply 3 1 40
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in tick
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in step 4 append 3 41 3 40 3:9800000000000000
+out send 4 appendreply 3 0 40
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in tick
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=40
+in step 4 append 3 40 3 39 3:9600000000000000
+out persist 18 3 4 41 - 3:9600000000000000
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=41
+in tick
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=41
+in propose 9900000000000000
+state role=Follower term=3 leader=4 commit=39 applied=39 base=0 last=41
+in step 4 append 3 41 3 40 -
+out apply 40 3:9500000000000000
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=41
+in tick
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=41
+in persisted 18
+out send 4 appendreply 3 1 41
+out send 4 appendreply 3 1 41
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=41
+in tick
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=41
+in step 4 append 3 40 3 40 3:9600000000000000,3:9800000000000000
+out persist 19 3 4 42 - 3:9800000000000000
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=42
+in step 4 append 3 42 3 40 -
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=42
+in persisted 19
+out send 4 appendreply 3 1 42
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=42
+in step 4 append 3 42 3 40 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=42
+in step 4 append 3 40 3 40 3:9600000000000000,3:9800000000000000
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=42
+in step 4 append 3 42 3 40 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=40 applied=40 base=0 last=42
+in step 4 append 3 42 3 42 -
+out apply 41 3:9600000000000000
+out apply 42 3:9800000000000000
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in propose 9d00000000000000
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in propose 9f00000000000000
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in propose a000000000000000
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=0 last=42
+in compact 42
+out persist 20 3 4 43 42:3 -
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in persisted 20
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in propose a400000000000000
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in propose a800000000000000
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 -
+out send 4 appendreply 3 1 42
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=42
+in step 4 append 3 42 3 42 3:aa00000000000000
+out persist 21 3 4 43 - 3:aa00000000000000
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in step 4 append 3 43 3 42 -
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in persisted 21
+out send 4 appendreply 3 1 43
+out send 4 appendreply 3 1 43
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in step 4 append 3 43 3 42 -
+out send 4 appendreply 3 1 43
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=42 applied=42 base=42 last=43
+in step 4 append 3 43 3 43 -
+out apply 43 3:aa00000000000000
+out send 4 appendreply 3 1 43
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in step 4 append 3 43 3 43 -
+out send 4 appendreply 3 1 43
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in step 4 append 3 43 3 43 -
+out send 4 appendreply 3 1 43
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in step 4 append 3 43 3 43 -
+out send 4 appendreply 3 1 43
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in step 4 append 3 43 3 43 -
+out send 4 appendreply 3 1 43
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in step 1 vote 4 43 3 1
+out send 1 votereply 3 0 1
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in step 1 vote 4 43 3 1
+out send 1 votereply 3 0 1
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+state role=Follower term=3 leader=4 commit=43 applied=43 base=42 last=43
+in tick
+out send 0 vote 4 43 3 1
+out send 1 vote 4 43 3 1
+out send 2 vote 4 43 3 1
+out send 4 vote 4 43 3 1
+state role=PreCandidate term=3 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=PreCandidate term=3 leader=- commit=43 applied=43 base=42 last=43
+in propose b400000000000000
+state role=PreCandidate term=3 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=PreCandidate term=3 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=PreCandidate term=3 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=PreCandidate term=3 leader=- commit=43 applied=43 base=42 last=43
+in propose b600000000000000
+state role=PreCandidate term=3 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=PreCandidate term=3 leader=- commit=43 applied=43 base=42 last=43
+in step 1 votereply 4 1 1
+state role=PreCandidate term=3 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=PreCandidate term=3 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=PreCandidate term=3 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=PreCandidate term=3 leader=- commit=43 applied=43 base=42 last=43
+in step 2 votereply 4 1 1
+out persist 22 4 3 44 - -
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in persisted 22
+out send 0 vote 4 43 3 0
+out send 1 vote 4 43 3 0
+out send 2 vote 4 43 3 0
+out send 4 vote 4 43 3 0
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in propose ba00000000000000
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in step 2 votereply 4 1 0
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in step 1 vote 4 43 3 1
+out send 1 votereply 4 0 1
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in tick
+state role=Candidate term=4 leader=- commit=43 applied=43 base=42 last=43
+in step 1 votereply 4 1 0
+out persist 23 4 3 44 - 4:-
+out send 0 append 4 43 3 43 4:-
+out send 1 append 4 43 3 43 4:-
+out send 2 append 4 43 3 43 4:-
+out send 4 append 4 43 3 43 4:-
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in tick
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in tick
+out send 0 append 4 44 4 43 -
+out send 1 append 4 44 4 43 -
+out send 2 append 4 44 4 43 -
+out send 4 append 4 44 4 43 -
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in tick
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in persisted 23
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in tick
+out send 0 append 4 44 4 43 -
+out send 1 append 4 44 4 43 -
+out send 2 append 4 44 4 43 -
+out send 4 append 4 44 4 43 -
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in tick
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in tick
+out send 0 append 4 44 4 43 -
+out send 1 append 4 44 4 43 -
+out send 2 append 4 44 4 43 -
+out send 4 append 4 44 4 43 -
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in step 1 appendreply 4 1 44
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in tick
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in step 2 appendreply 4 0 43
+out send 2 append 4 43 3 43 4:-
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in tick
+out send 0 append 4 44 4 43 -
+out send 1 append 4 44 4 43 -
+out send 2 append 4 44 4 43 -
+out send 4 append 4 44 4 43 -
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in step 1 appendreply 4 1 44
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in tick
+state role=Leader term=4 leader=3 commit=43 applied=43 base=42 last=44
+in step 2 appendreply 4 1 44
+out apply 44 4:-
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in tick
+out send 0 append 4 44 4 44 -
+out send 1 append 4 44 4 44 -
+out send 2 append 4 44 4 44 -
+out send 4 append 4 44 4 44 -
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in tick
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in step 1 appendreply 4 1 44
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in tick
+out send 0 append 4 44 4 44 -
+out send 1 append 4 44 4 44 -
+out send 2 append 4 44 4 44 -
+out send 4 append 4 44 4 44 -
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in step 1 appendreply 4 1 44
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in tick
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in tick
+out send 0 append 4 44 4 44 -
+out send 1 append 4 44 4 44 -
+out send 2 append 4 44 4 44 -
+out send 4 append 4 44 4 44 -
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in step 2 appendreply 4 1 44
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in tick
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in tick
+out send 0 append 4 44 4 44 -
+out send 1 append 4 44 4 44 -
+out send 2 append 4 44 4 44 -
+out send 4 append 4 44 4 44 -
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in step 1 appendreply 4 1 44
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in tick
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in step 1 appendreply 4 1 44
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in step 2 appendreply 4 1 44
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in tick
+out send 0 append 4 44 4 44 -
+out send 1 append 4 44 4 44 -
+out send 2 append 4 44 4 44 -
+out send 4 append 4 44 4 44 -
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in step 2 appendreply 4 1 44
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in step 1 appendreply 4 1 44
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in tick
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in tick
+out send 0 append 4 44 4 44 -
+out send 1 append 4 44 4 44 -
+out send 2 append 4 44 4 44 -
+out send 4 append 4 44 4 44 -
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in step 1 appendreply 4 1 44
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in tick
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
+in step 2 appendreply 4 1 44
+state role=Leader term=4 leader=3 commit=44 applied=44 base=42 last=44
