@@ -145,6 +145,10 @@ pub struct Status {
     /// Set once the replica has stopped itself (state divergence, fatal I/O).
     pub halted: Option<String>,
     pub digests_verified: u64,
+    /// Transport counters: messages shed because a peer's queue was full or
+    /// the peer was down, and frames rejected as malformed or unauthenticated.
+    pub net_dropped: u64,
+    pub net_bad_frames: u64,
 }
 
 enum Event {
@@ -328,6 +332,8 @@ impl Replica {
             pending: 0,
             halted: None,
             digests_verified: 0,
+            net_dropped: 0,
+            net_bad_frames: 0,
         }));
 
         let sink_tx = Mutex::new(tx.clone());
@@ -838,5 +844,7 @@ impl Driver {
         s.pending = self.pending.len();
         s.halted = self.halted.clone();
         s.digests_verified = self.digests_verified;
+        s.net_dropped = self.transport.stats.dropped.load(Ordering::Relaxed);
+        s.net_bad_frames = self.transport.stats.bad_frames.load(Ordering::Relaxed);
     }
 }
