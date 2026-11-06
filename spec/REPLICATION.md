@@ -681,3 +681,74 @@ The TS runtime does on one thread what Rust spreads over several, so it trails
 wherever the CPU is the limit. The window-8 row is bounded by the durable ack
 latency, not by the CPU. The matching-pipeline rows add matcher-ts's own cost
 (the per-language pipeline numbers in `docs/RESULTS.md`).
+
+### 13.15 Latency: the open-loop harness and relaxed durability
+
+Everything above measured throughput. Latency needs a different harness.
+`orderer-rust`'s `clusterbench --rate R` / `--sweep R1,R2,...` is **open loop**:
+it sends on a fixed schedule whether or not earlier batches were acknowledged,
+and times each batch from when it was *due*, so a stall counts against everything
+that should have been sent during it (no coordinated omission). Each producer is
+one spinning thread that sends and polls acks without blocking, so no wake-up lands
+inside a measurement. Every row reports achieved throughput, exact p50 to p99.99
+and max in microseconds, a stall report, the generator's own worst lag (with a
+warning when it explains the tail) and the transport's drop counters. Only the
+Rust runtime has it so far.
+
+First results, M1, three replicas and the generator in one process, no-op state
+machine, ack = commit at the leader:
+
+| Offered | Batch | Durability | p50 | p99 | p99.9 |
+|---|---|---|---|---|---|
+| 5k cmds/s | 1 | none | 77 us | 119 us | 4.3 ms |
+| 20k cmds/s | 1 | none | 53 us | 162 us | 2.6 ms |
+| 200k cmds/s | 10 | none | 59 us | 289 us | 1.6 ms |
+| 2M cmds/s | 100 | none | 68 us | 3.7 ms | 10.6 ms |
+| 1k-20k cmds/s | 1 | fsync on a quorum | 10.7-16.0 ms | 17-21 ms | 22-30 ms |
+
+Past the knee latency is queueing: batch 100 is flat to about 2M commands/s and
+queues at 5M/s (p50 40 ms), while batch 10 was still flat at 2M commands/s (200k
+entries/s). So the knee is not a pure entries-per-second limit, and what sets it
+(per-entry cost, bytes replicated, or both) was not isolated. **Caveat:** on this
+machine (4 fast and 4 slow cores) sporadic 80-125 ms stalls also appear at moderate
+load and do not track it. Message loss, the filesystem (a RAM disk changed
+nothing), log growth, memory pressure and OS wake-up latency (measured with C
+probes) were ruled out; the cause is probably the scheduler with about 21 busy
+threads, which could not be proven. Tail numbers above light load on a laptop are
+not trustworthy; they need dedicated cores or machines.
+
+**Relaxed durability** (`ReplicaConfig.fsync_interval`, `--fsync relaxed[:MS]`):
+a write counts as persisted once it is handed to the operating system, and a
+background thread, on its own file handle, fsyncs about every MS. Commit latency is
+then a network round trip, not a flush. A crashed *process* loses nothing it had
+written (the OS holds the data); a quorum losing power or the OS at once can lose
+the last interval of entries, so it is an explicit trade, off by default. The
+syncer follows compaction rewrites, flushes on a graceful stop, and halts the
+replica if a flush fails.
+
+| Durability (1k-20k cmds/s, batch 1) | p50 | p99 |
+|---|---|---|
+| fsync on a quorum | 10.7-16.0 ms | 17-21 ms |
+| relaxed, 5 ms | 0.9-1.3 ms | 3.5 ms |
+| relaxed, 20 ms | 44-55 us | 2.9-3.5 ms |
+| relaxed, 200 ms | 53-77 us | 2.6-2.7 ms |
+| none | 53-77 us | 0.1-0.2 ms |
+
+On macOS a flush in progress blocks writers to the same file, so the tail is the
+fraction of time a flush runs (a 10 ms flush every 200 ms is 5%, which is the p99
+above) and short intervals hurt the median; Linux needs re-measuring. Checked by
+two end-to-end tests (leader crash loses no acknowledged command; whole-cluster
+restart with compaction) and by `scripts/failover.sh` with real processes and
+`kill -9` of the leader (`FSYNC=relaxed:20`): 8 of 8 runs passed.
+
+**A finding that is not about fsync:** a state digest of the matching pipeline is
+a full snapshot, about 0.4 s on this machine. With `--digest-every 64` and the
+several hundred commits per second that relaxed mode allows, the applier spent most
+of its time digesting and fell behind, so a hash request queued for over 30 s and
+`orderer-load settle` timed out in about one run in ten. Nothing diverged or was
+lost (the applied logs were identical and every acknowledged batch present); the
+digest interval was wrong for the commit rate. At `--digest-every 2048` acknowledged
+throughput in that test tripled and all runs passed. A cheaper (incremental or
+time-based) digest is future work. Relaxed durability is implemented only in
+orderer-rust so far.
+
