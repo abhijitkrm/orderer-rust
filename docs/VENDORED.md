@@ -12,7 +12,7 @@ re-vendored.
 
 - **upstream**: `orderer`
 - **repo**: `https://github.com/abhijitkrm/orderer`
-- **commit**: `05de9cabeee44e47e73e52568cea79913bbdd957`
+- **commit**: `b7794d1f2982f63ffce0868e27f2c6bd00deac52`
 - **paths**: `spec=spec vectors=vectors`
 - **tag**: `orderer-spec/1.3`
 

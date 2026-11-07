@@ -814,9 +814,40 @@ chain u64 x partitions | matcher-snap/1 body`. A snapshot with a different
 partition count is refused. Vectors: `vectors/replication-digest/` (README there),
 the whole of `vectors/pipeline/multisymbol` and `fuzz_s11` at 1, 2 and 4 partitions.
 
-**Measured** (orderer-rust, M1, 300k resting orders over 8 symbols, 2 partitions):
-digest 0.2-1.6 ms, deep digest 174-179 ms. `scripts/failover.sh` with relaxed
-fsync and `--digest-every 64`, the configuration that failed to settle about one
-run in ten before: 10 of 10 passes, and about 180,000 acknowledged batches per 24
-seconds against about 15,000 with the old digest. Rust only until the ports land.
+**Measured** (M1, 300k resting orders over 8 symbols, 2 partitions; digest against
+deep digest):
 
+| | digest | deep digest |
+|---|---|---|
+| Rust | 0.2-1.6 ms | 174-179 ms |
+| C++ | 0.4 ms | 241 ms |
+| Go | 2 ms | 69 ms |
+| Java | 2.1 ms | 255 ms |
+| TypeScript | 6.3 ms | 229 ms |
+
+`scripts/failover.sh` (Rust) with relaxed fsync and `--digest-every 64`, the
+configuration that failed to settle about one run in ten before: 10 of 10 passes,
+and about 180,000 acknowledged batches per 24 seconds against about 15,000 with the
+old digest.
+
+**Checked across languages.** Every port reproduces all six vectors bit for bit on
+the first run, and restores a snapshot produced by another language into an
+identical state (a Java restore of a Rust snapshot re-serialises byte for byte).
+Four-language clusters (Java, Rust, C++, Go and TypeScript, Rust, Go, C++) under
+`kill -9` of the leader, with compaction and forced cross-language snapshot
+transfer (up to 10 installs in one run), settle on identical full-state digests,
+with the periodic chain digests verifying throughout and no node halting; with
+applied-log verification, every acknowledged batch survived on every replica in the
+same order exactly once.
+
+**A defect class worth recording.** Two ports first passed their mixed-cluster runs
+for the wrong reason. Their node binaries wrap the state machine to write an audit
+log, and the wrapper forwarded `digest` but not `deep_digest`, so those nodes
+answered the state-hash request with the cheap chain digest. Next to a Rust node
+with the same defect, both returned the same cheap digest and agreed. It showed up
+only when a node that forwarded correctly (Go, C++, or Rust once it was fixed) joined. A wrapper
+that forwards one of two methods and silently uses the default for the other is
+easy to write; Rust now has a regression test at the dedup wrapper, and the rule for
+every port is that a wrapper forwards both. A single-language cluster cannot catch
+it, so a mixed cluster that includes a node known to be correct is the check that
+matters.
