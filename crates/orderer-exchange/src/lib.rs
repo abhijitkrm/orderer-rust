@@ -13,9 +13,19 @@
 #![forbid(unsafe_code)]
 
 pub mod archive;
+pub mod audit;
+mod frame;
+pub mod gateway;
+pub mod node;
+pub mod relay;
 pub mod server;
 pub mod tier;
+pub mod tierclient;
 pub mod wire;
+
+pub use gateway::{GatewayClient, GatewayServer, LedgerState, OrderInfo};
+pub use node::{demo_config, LedgerNodeSm, LedgerView, Reply};
+pub use tierclient::TierClient;
 
 pub use archive::TierView;
 pub use archive::{map_event, ArchiveEgress, ArchiveState, Mapped, Truncated};
