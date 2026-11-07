@@ -1,6 +1,8 @@
 //! The ledger state machine: balances, holds, open orders, the outbox and the
 //! settlement marks. See `docs/design/LEDGER-RISK.md` sections 3-6.
 
+use crate::hashed::{lane_add, lane_bytes, lane_sub, Lane, Mix, Tracked, ZERO};
+use orderer_cluster::sha256::sha256;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub type AccountId = u64;
@@ -60,7 +62,61 @@ pub struct Config {
     pub fees: BTreeMap<SymbolId, (u32, u32)>,
 }
 
+/// Why a [`Config`] cannot be used.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigError(pub String);
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
 impl Config {
+    /// Ledger shard numbers are below [`SLICE_SHARD_BIT`]: orders entered through a
+    /// credit slice carry that bit in the shard field of their id, so a ledger shard
+    /// at or above it would mistake them for its own.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.shard >= SLICE_SHARD_BIT {
+            return Err(ConfigError(format!(
+                "ledger shard {} is out of range: shard numbers must be below {:#x} \
+                 (bit 15 of the order-id shard field marks credit-slice orders)",
+                self.shard, SLICE_SHARD_BIT
+            )));
+        }
+        self.validate_reference()
+    }
+
+    /// The checks that also apply to a slice engine's configuration.
+    pub(crate) fn validate_reference(&self) -> Result<(), ConfigError> {
+        if self.fee_ppm > PPM as u32 {
+            return Err(ConfigError(format!(
+                "fee_ppm {} exceeds 1,000,000",
+                self.fee_ppm
+            )));
+        }
+        for (id, (m, t)) in &self.fees {
+            if *m > PPM as u32 || *t > PPM as u32 {
+                return Err(ConfigError(format!(
+                    "fees for symbol {id} exceed 1,000,000 ppm"
+                )));
+            }
+        }
+        for (id, sym) in &self.symbols {
+            if sym.lot == 0 {
+                return Err(ConfigError(format!("symbol {id} has a zero lot")));
+            }
+            if sym.base == sym.quote {
+                return Err(ConfigError(format!(
+                    "symbol {id} has the same base and quote asset"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn fee_pair(&self, symbol: SymbolId) -> (u32, u32) {
         self.fees
             .get(&symbol)
@@ -149,6 +205,16 @@ pub enum Cmd {
         price: u64,
         qty: u64,
     },
+    /// Like `Reserve`, for an immediate-or-cancel order: whatever does not trade at
+    /// once is closed by matching (a `Closed` event releases its hold). A market
+    /// order is an IOC order priced at its protection price.
+    ReserveIoc {
+        account: AccountId,
+        symbol: SymbolId,
+        side: Side,
+        price: u64,
+        qty: u64,
+    },
     Cancel {
         account: AccountId,
         order: OrderId,
@@ -226,6 +292,24 @@ pub enum Cmd {
         asset: AssetId,
         amount: Amount,
     },
+    /// The time sidecar: `cmd` stamped with the proposer's clock reading `ts_ns`.
+    /// The state machine raises its clock to `ts_ns` (never lowers it) and then
+    /// applies `cmd`, so replicas never read a local clock in `apply` and every
+    /// order's `born` is a function of the log. Does not nest.
+    At {
+        ts_ns: u64,
+        cmd: Box<Cmd>,
+    },
+}
+
+impl Cmd {
+    /// `self` stamped with `ts_ns` (see [`Cmd::At`]).
+    pub fn at(self, ts_ns: u64) -> Cmd {
+        Cmd::At {
+            ts_ns,
+            cmd: Box::new(self),
+        }
+    }
 }
 
 /// One entry of the adjustment audit ring.
@@ -244,6 +328,14 @@ pub struct Adjustment {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutMsg {
     Submit {
+        order: OrderId,
+        symbol: SymbolId,
+        side: Side,
+        price: u64,
+        qty: u64,
+    },
+    /// An immediate-or-cancel order (`Cmd::ReserveIoc`).
+    SubmitIoc {
         order: OrderId,
         symbol: SymbolId,
         side: Side,
@@ -286,6 +378,8 @@ pub enum Reject {
     Gap,
     /// The command names the fee system account.
     ReservedAccount,
+    /// A time-stamped command inside a time-stamped command.
+    Nested,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -326,15 +420,23 @@ pub enum Outcome {
 
 pub struct Ledger {
     pub(crate) cfg: Config,
-    pub(crate) balances: BTreeMap<(AccountId, AssetId), Balance>,
-    pub(crate) orders: BTreeMap<OrderId, Order>,
+    pub(crate) balances: Tracked<(AccountId, AssetId), Balance>,
+    pub(crate) orders: Tracked<OrderId, Order>,
+    /// Open orders with no cancel queued, by `(born, id)`; and those with one, by
+    /// `(cancel_at, id)`. Derived from `orders`, so not in the snapshot: they let a
+    /// sweep find what is due without visiting every order.
+    pub(crate) by_born: BTreeSet<(u64, OrderId)>,
+    pub(crate) by_cancel: BTreeSet<(u64, OrderId)>,
     pub(crate) next_order: u64,
     pub(crate) outbox: VecDeque<OutMsg>,
     pub(crate) outbox_base: u64,
     pub(crate) hw: BTreeMap<u32, u64>,
     pub(crate) deposit_ids: BTreeSet<u64>,
     pub(crate) withdraw_ids: BTreeSet<u64>,
-    pub(crate) pending: BTreeMap<u64, (AccountId, AssetId, Amount)>,
+    pub(crate) pending: Tracked<u64, (AccountId, AssetId, Amount)>,
+    /// Accumulators of the outbox entries and of the three id sets (see `hashed`).
+    pub(crate) outbox_acc: Lane,
+    pub(crate) ids_acc: [Lane; 3],
     pub(crate) fees: BTreeMap<AssetId, Amount>,
     pub(crate) deposited: BTreeMap<AssetId, Amount>,
     pub(crate) withdrawn: BTreeMap<AssetId, Amount>,
@@ -347,11 +449,101 @@ pub struct Ledger {
     pub(crate) adjusted_out: BTreeMap<AssetId, Amount>,
     pub(crate) adjust_log: VecDeque<Adjustment>,
     /// Phase 2: what each account has lent to the group, by asset.
-    pub(crate) lent: BTreeMap<(AccountId, AssetId), Amount>,
+    pub(crate) lent: Tracked<(AccountId, AssetId), Amount>,
     pub(crate) lent_granted: BTreeMap<AssetId, Amount>,
     pub(crate) lent_returned: BTreeMap<AssetId, Amount>,
     pub(crate) slice_in: BTreeMap<AssetId, Amount>,
     pub(crate) slice_out: BTreeMap<AssetId, Amount>,
+}
+
+fn side_u(s: Side) -> u64 {
+    match s {
+        Side::Buy => 0,
+        Side::Sell => 1,
+    }
+}
+
+fn balance_cell(k: &(AccountId, AssetId), b: &Balance) -> Lane {
+    Mix::new(1)
+        .u64(k.0)
+        .u64(k.1 as u64)
+        .u128(b.available)
+        .u128(b.held)
+        .finish()
+}
+
+fn order_cell(id: &OrderId, o: &Order) -> Lane {
+    Mix::new(2)
+        .u64(*id)
+        .u64(o.account)
+        .u64(o.symbol as u64)
+        .u64(side_u(o.side))
+        .u64(o.price)
+        .u64(o.remaining)
+        .u128(o.held)
+        .u64(o.cancelling as u64)
+        .u64(o.born)
+        .u64(o.cancel_at)
+        .finish()
+}
+
+fn lent_cell(k: &(AccountId, AssetId), v: &Amount) -> Lane {
+    Mix::new(3).u64(k.0).u64(k.1 as u64).u128(*v).finish()
+}
+
+fn pending_cell(id: &u64, v: &(AccountId, AssetId, Amount)) -> Lane {
+    Mix::new(4)
+        .u64(*id)
+        .u64(v.0)
+        .u64(v.1 as u64)
+        .u128(v.2)
+        .finish()
+}
+
+/// Outbox entry `idx`: position matters, so a reordered outbox hashes differently.
+pub(crate) fn out_cell(idx: u64, m: &OutMsg) -> Lane {
+    let mut x = Mix::new(5);
+    x.u64(idx);
+    match *m {
+        OutMsg::Submit {
+            order,
+            symbol,
+            side,
+            price,
+            qty,
+        } => x
+            .u64(1)
+            .u64(order)
+            .u64(symbol as u64)
+            .u64(side_u(side))
+            .u64(price)
+            .u64(qty),
+        OutMsg::SubmitIoc {
+            order,
+            symbol,
+            side,
+            price,
+            qty,
+        } => x
+            .u64(6)
+            .u64(order)
+            .u64(symbol as u64)
+            .u64(side_u(side))
+            .u64(price)
+            .u64(qty),
+        OutMsg::Cancel { order, symbol } => x.u64(2).u64(order).u64(symbol as u64),
+        OutMsg::Grant {
+            account,
+            asset,
+            amount,
+        } => x.u64(3).u64(account).u64(asset as u64).u128(amount),
+        OutMsg::Recall {
+            account,
+            asset,
+            amount,
+        } => x.u64(4).u64(account).u64(asset as u64).u128(amount),
+    };
+    x.finish()
 }
 
 fn bump(map: &mut BTreeMap<AssetId, Amount>, asset: AssetId, by: Amount) {
@@ -366,18 +558,37 @@ fn fee_of(amount: Amount, ppm: u32) -> Amount {
 }
 
 impl Ledger {
+    /// A ledger for `cfg`, which must be valid ([`Config::validate`]).
+    pub fn try_new(cfg: Config) -> Result<Ledger, ConfigError> {
+        cfg.validate()?;
+        Ok(Ledger::new_unchecked(cfg))
+    }
+
+    /// Like [`Ledger::try_new`], panicking with the reason when `cfg` is invalid.
     pub fn new(cfg: Config) -> Ledger {
+        match Ledger::try_new(cfg) {
+            Ok(l) => l,
+            Err(e) => panic!("invalid ledger config: {e}"),
+        }
+    }
+
+    /// For the slice engine, whose shard field legitimately carries the slice bit.
+    pub(crate) fn new_unchecked(cfg: Config) -> Ledger {
         Ledger {
             cfg,
-            balances: BTreeMap::new(),
-            orders: BTreeMap::new(),
+            balances: Tracked::new(),
+            orders: Tracked::new(),
+            by_born: BTreeSet::new(),
+            by_cancel: BTreeSet::new(),
+            outbox_acc: ZERO,
+            ids_acc: [ZERO; 3],
             next_order: 1,
             outbox: VecDeque::new(),
             outbox_base: 0,
             hw: BTreeMap::new(),
             deposit_ids: BTreeSet::new(),
             withdraw_ids: BTreeSet::new(),
-            pending: BTreeMap::new(),
+            pending: Tracked::new(),
             fees: BTreeMap::new(),
             deposited: BTreeMap::new(),
             withdrawn: BTreeMap::new(),
@@ -389,7 +600,7 @@ impl Ledger {
             adjusted_in: BTreeMap::new(),
             adjusted_out: BTreeMap::new(),
             adjust_log: VecDeque::new(),
-            lent: BTreeMap::new(),
+            lent: Tracked::new(),
             lent_granted: BTreeMap::new(),
             lent_returned: BTreeMap::new(),
             slice_in: BTreeMap::new(),
@@ -462,11 +673,15 @@ impl Ledger {
     pub fn lent(&self, account: AccountId, asset: AssetId) -> Amount {
         self.lent.get(&(account, asset)).copied().unwrap_or(0)
     }
+    /// Every `(account, asset)` with funds lent to the matching group, and how much.
+    pub fn lent_entries(&self) -> impl Iterator<Item = ((AccountId, AssetId), Amount)> + '_ {
+        self.lent.iter().map(|(k, v)| (*k, *v))
+    }
     /// Everything lent of `asset` on this shard.
     pub fn lent_total(&self, asset: AssetId) -> Amount {
         self.lent
             .iter()
-            .filter(|((_, a), _)| *a == asset)
+            .filter(|(k, _)| k.1 == asset)
             .map(|(_, v)| *v)
             .sum()
     }
@@ -513,7 +728,7 @@ impl Ledger {
         take
     }
     fn add_lent(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> bool {
-        let e = self.lent.entry((account, asset)).or_insert(0);
+        let e = self.lent.get_or_insert_with((account, asset), || 0);
         match e.checked_add(amount) {
             Some(v) => {
                 *e = v;
@@ -539,7 +754,7 @@ impl Ledger {
     /// pending withdrawals and funds lent to the matching group.
     pub fn holdings(&self, asset: AssetId) -> Amount {
         let mut t: Amount = self.fees(asset) + self.lent_total(asset);
-        for ((_, a), b) in &self.balances {
+        for ((_, a), b) in self.balances.iter() {
             if *a == asset {
                 t += b.available + b.held;
             }
@@ -552,6 +767,151 @@ impl Ledger {
         t
     }
 
+    /// Append to the outbox, keeping its accumulator current.
+    fn out_push(&mut self, m: OutMsg) {
+        let idx = self.outbox_next();
+        self.outbox_acc = lane_add(self.outbox_acc, out_cell(idx, &m));
+        self.outbox.push_back(m);
+    }
+
+    fn out_pop(&mut self) {
+        if let Some(m) = self.outbox.pop_front() {
+            self.outbox_acc = lane_sub(self.outbox_acc, out_cell(self.outbox_base, &m));
+            self.outbox_base += 1;
+        }
+    }
+
+    /// Count `id` in the accumulator of id set `which` (0 deposits, 1 withdrawals,
+    /// 2 adjustments).
+    pub(crate) fn note_id(&mut self, which: usize, id: u64) {
+        let l = Mix::new(100 + which as u64).u64(id).finish();
+        self.ids_acc[which] = lane_add(self.ids_acc[which], l);
+    }
+
+    /// Remove an open order and its age-index entry.
+    fn drop_order(&mut self, id: OrderId) -> Option<Order> {
+        let o = self.orders.remove(&id)?;
+        if o.cancelling {
+            self.by_cancel.remove(&(o.cancel_at, id));
+        } else {
+            self.by_born.remove(&(o.born, id));
+        }
+        Some(o)
+    }
+
+    /// Rebuild the age indexes from `orders` (after a restore).
+    pub(crate) fn rebuild_indexes(&mut self) {
+        self.by_born.clear();
+        self.by_cancel.clear();
+        for (id, o) in self.orders.iter() {
+            if o.cancelling {
+                self.by_cancel.insert((o.cancel_at, *id));
+            } else {
+                self.by_born.insert((o.born, *id));
+            }
+        }
+    }
+
+    /// The divergence digest: SHA-256 over a small summary (counters, per-asset
+    /// totals, marks) and the accumulators of every large table. Cost is the number
+    /// of entries changed since the last call, not the size of the state, which
+    /// makes it cheap enough to take every few hundred log entries. It detects
+    /// divergence, it is not collision-resistant against an adversary: use
+    /// [`Ledger::deep_digest`] (SHA-256 of the whole snapshot, O(state)) for that.
+    pub fn digest(&self) -> [u8; 32] {
+        let mut b = Vec::with_capacity(512);
+        b.extend_from_slice(b"orderer-ledger-digest/2");
+        self.small_state(&mut b);
+        let lanes = [
+            self.balances.lane(balance_cell),
+            self.orders.lane(order_cell),
+            self.lent.lane(lent_cell),
+            self.pending.lane(pending_cell),
+            self.outbox_acc,
+            self.ids_acc[0],
+            self.ids_acc[1],
+            self.ids_acc[2],
+        ];
+        for l in lanes {
+            b.extend_from_slice(&lane_bytes(l));
+        }
+        for n in [
+            self.balances.len(),
+            self.orders.len(),
+            self.lent.len(),
+            self.pending.len(),
+            self.outbox.len(),
+            self.deposit_ids.len(),
+            self.withdraw_ids.len(),
+            self.adjust_ids.len(),
+        ] {
+            b.extend_from_slice(&(n as u64).to_le_bytes());
+        }
+        sha256(&b)
+    }
+
+    /// Everything in the digest that is not a large table: scalars, the per-asset
+    /// maps, the marks and the adjustment ring (all bounded).
+    fn small_state(&self, b: &mut Vec<u8>) {
+        b.extend_from_slice(&self.cfg.shard.to_le_bytes());
+        for v in [
+            self.next_order,
+            self.outbox_base,
+            self.anomalies,
+            self.clock,
+        ] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&(self.hw.len() as u32).to_le_bytes());
+        for (s, i) in &self.hw {
+            b.extend_from_slice(&s.to_le_bytes());
+            b.extend_from_slice(&i.to_le_bytes());
+        }
+        for m in [
+            &self.fees,
+            &self.deposited,
+            &self.withdrawn,
+            &self.settled_in,
+            &self.settled_out,
+            &self.adjusted_in,
+            &self.adjusted_out,
+            &self.lent_granted,
+            &self.lent_returned,
+            &self.slice_in,
+            &self.slice_out,
+        ] {
+            b.extend_from_slice(&(m.len() as u32).to_le_bytes());
+            for (k, v) in m {
+                b.extend_from_slice(&k.to_le_bytes());
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        b.extend_from_slice(&(self.adjust_log.len() as u32).to_le_bytes());
+        for a in &self.adjust_log {
+            b.extend_from_slice(&a.external_id.to_le_bytes());
+            b.extend_from_slice(&a.account.to_le_bytes());
+            b.extend_from_slice(&a.asset.to_le_bytes());
+            b.push(a.credit as u8);
+            b.extend_from_slice(&a.amount.to_le_bytes());
+            b.extend_from_slice(&a.reason.to_le_bytes());
+        }
+    }
+
+    /// The accumulators recomputed from scratch, ignoring every cache, for tests
+    /// that pin the incremental bookkeeping to its definition.
+    pub fn digest_from_scratch(&self) -> [u8; 32] {
+        let mut fresh = Ledger::new_unchecked(self.cfg.clone());
+        fresh.copy_state_from(self);
+        fresh.digest()
+    }
+
+    fn copy_state_from(&mut self, o: &Ledger) {
+        // A snapshot round trip rebuilds every table and accumulator.
+        let snap = o.snapshot();
+        let l = Ledger::parse(self.cfg.clone(), &snap).expect("own snapshot parses");
+        *self = l;
+    }
+
     pub fn note_undecodable(&mut self) -> Outcome {
         self.anomalies += 1;
         Outcome::Anomaly
@@ -561,6 +921,7 @@ impl Ledger {
         match *cmd {
             Cmd::Deposit { account, .. }
             | Cmd::Reserve { account, .. }
+            | Cmd::ReserveIoc { account, .. }
             | Cmd::Withdraw { account, .. }
             | Cmd::Adjust { account, .. }
             | Cmd::Lend { account, .. }
@@ -581,7 +942,14 @@ impl Ledger {
                 side,
                 price,
                 qty,
-            } => self.reserve(account, symbol, side, price, qty),
+            } => self.reserve(account, symbol, side, price, qty, false),
+            Cmd::ReserveIoc {
+                account,
+                symbol,
+                side,
+                price,
+                qty,
+            } => self.reserve(account, symbol, side, price, qty, true),
             Cmd::Cancel { account, order } => self.cancel(account, order),
             Cmd::Settle {
                 source,
@@ -599,8 +967,7 @@ impl Ledger {
             Cmd::OutboxAck { upto } => {
                 let upto = upto.min(self.outbox_next());
                 while self.outbox_base < upto {
-                    self.outbox.pop_front();
-                    self.outbox_base += 1;
+                    self.out_pop();
                 }
                 Outcome::Acked
             }
@@ -636,6 +1003,16 @@ impl Ledger {
                 asset,
                 amount,
             } => self.recall(account, asset, amount),
+            Cmd::At {
+                ts_ns,
+                cmd: ref inner,
+            } => {
+                if matches!(**inner, Cmd::At { .. }) {
+                    return Outcome::Rejected(Reject::Nested);
+                }
+                self.clock = self.clock.max(ts_ns);
+                self.apply(inner)
+            }
         }
     }
 
@@ -656,7 +1033,7 @@ impl Ledger {
         self.add_lent(account, asset, amount);
         bump(&mut self.lent_granted, asset, amount);
         let outbox = self.outbox_next();
-        self.outbox.push_back(OutMsg::Grant {
+        self.out_push(OutMsg::Grant {
             account,
             asset,
             amount,
@@ -673,7 +1050,7 @@ impl Ledger {
             return Outcome::Rejected(Reject::Insufficient);
         }
         let outbox = self.outbox_next();
-        self.outbox.push_back(OutMsg::Recall {
+        self.out_push(OutMsg::Recall {
             account,
             asset,
             amount: amount.min(lent),
@@ -683,26 +1060,44 @@ impl Ledger {
 
     fn sweep(&mut self, max_age_ns: u64, retry_ns: u64, max: u32) -> Outcome {
         let now = self.clock;
+        let max = max as usize;
         let mut todo: Vec<OrderId> = Vec::new();
-        for (id, o) in &self.orders {
-            if todo.len() as u32 >= max {
-                break;
+        // Cancels queued long ago and still open come first, oldest first, then
+        // orders that have never had one, oldest first. Both are read off the age
+        // indexes, so the cost is the number swept, not the number of open orders.
+        if retry_ns > 0 {
+            if let Some(limit) = now.checked_sub(retry_ns) {
+                todo.extend(
+                    self.by_cancel
+                        .range(..=(limit, u64::MAX))
+                        .take(max)
+                        .map(|&(_, id)| id),
+                );
             }
-            let due = if o.cancelling {
-                retry_ns > 0 && now.saturating_sub(o.cancel_at) >= retry_ns
-            } else {
-                now.saturating_sub(o.born) >= max_age_ns
-            };
-            if due {
-                todo.push(*id);
+        }
+        if todo.len() < max {
+            if let Some(limit) = now.checked_sub(max_age_ns) {
+                let room = max - todo.len();
+                todo.extend(
+                    self.by_born
+                        .range(..=(limit, u64::MAX))
+                        .take(room)
+                        .map(|&(_, id)| id),
+                );
             }
         }
         for id in &todo {
             let o = self.orders.get_mut(id).unwrap();
+            if o.cancelling {
+                self.by_cancel.remove(&(o.cancel_at, *id));
+            } else {
+                self.by_born.remove(&(o.born, *id));
+            }
             o.cancelling = true;
             o.cancel_at = now;
+            self.by_cancel.insert((now, *id));
             let symbol = o.symbol;
-            self.outbox.push_back(OutMsg::Cancel { order: *id, symbol });
+            self.out_push(OutMsg::Cancel { order: *id, symbol });
         }
         Outcome::Swept {
             queued: todo.len() as u32,
@@ -740,6 +1135,7 @@ impl Ledger {
             bump(&mut self.adjusted_out, asset, amount);
         }
         self.adjust_ids.insert(id);
+        self.note_id(2, id);
         if self.adjust_log.len() == ADJUST_LOG {
             self.adjust_log.pop_front();
         }
@@ -765,13 +1161,15 @@ impl Ledger {
             return Outcome::Rejected(Reject::Insufficient);
         }
         self.withdraw_ids.insert(id);
+        self.note_id(1, id);
         *self.fees.get_mut(&asset).unwrap() -= amount;
         self.pending.insert(id, (FEE_ACCOUNT, asset, amount));
         Outcome::WithdrawHeld
     }
 
     fn bal(&mut self, a: AccountId, asset: AssetId) -> &mut Balance {
-        self.balances.entry((a, asset)).or_default()
+        self.balances
+            .get_or_insert_with((a, asset), Balance::default)
     }
 
     fn deposit(&mut self, account: AccountId, asset: AssetId, amount: Amount, id: u64) -> Outcome {
@@ -787,6 +1185,7 @@ impl Ledger {
             return Outcome::Rejected(Reject::Overflow);
         }
         self.deposit_ids.insert(id);
+        self.note_id(0, id);
         self.bal(account, asset).available += amount;
         bump(&mut self.deposited, asset, amount);
         Outcome::Deposited
@@ -819,6 +1218,7 @@ impl Ledger {
         side: Side,
         price: u64,
         qty: u64,
+        ioc: bool,
     ) -> Outcome {
         let Some(sym) = self.cfg.symbols.get(&symbol).copied() else {
             return Outcome::Rejected(Reject::UnknownSymbol);
@@ -844,6 +1244,7 @@ impl Ledger {
         let b = self.bal(account, asset);
         b.available -= hold;
         b.held += hold;
+        self.by_born.insert((self.clock, order));
         self.orders.insert(
             order,
             Order {
@@ -859,13 +1260,24 @@ impl Ledger {
             },
         );
         let outbox = self.outbox_next();
-        self.outbox.push_back(OutMsg::Submit {
-            order,
-            symbol,
-            side,
-            price,
-            qty,
-        });
+        let m = if ioc {
+            OutMsg::SubmitIoc {
+                order,
+                symbol,
+                side,
+                price,
+                qty,
+            }
+        } else {
+            OutMsg::Submit {
+                order,
+                symbol,
+                side,
+                price,
+                qty,
+            }
+        };
+        self.out_push(m);
         Outcome::Reserved { order, outbox }
     }
 
@@ -882,8 +1294,10 @@ impl Ledger {
         o.cancelling = true;
         o.cancel_at = self.clock;
         let symbol = o.symbol;
+        self.by_born.remove(&(o.born, order));
+        self.by_cancel.insert((self.clock, order));
         let outbox = self.outbox_next();
-        self.outbox.push_back(OutMsg::Cancel { order, symbol });
+        self.out_push(OutMsg::Cancel { order, symbol });
         Outcome::CancelQueued { outbox }
     }
 
@@ -898,6 +1312,7 @@ impl Ledger {
             return Outcome::Rejected(Reject::Insufficient);
         }
         self.withdraw_ids.insert(id);
+        self.note_id(1, id);
         self.bal(account, asset).available -= amount;
         self.pending.insert(id, (account, asset, amount));
         Outcome::WithdrawHeld
@@ -1004,7 +1419,7 @@ impl Ledger {
         if !self.local(id) {
             return false;
         }
-        let Some(o) = self.orders.remove(&id) else {
+        let Some(o) = self.drop_order(id) else {
             return false;
         };
         let asset = self.hold_asset(&o);
@@ -1077,7 +1492,7 @@ impl Ledger {
         o.remaining -= qty;
         o.held -= hold_used;
         if o.remaining == 0 {
-            let o = self.orders.remove(&id).unwrap();
+            let o = self.drop_order(id).unwrap();
             if o.held > 0 {
                 let asset = self.hold_asset(&o);
                 let b = self.bal(o.account, asset);
@@ -1088,7 +1503,7 @@ impl Ledger {
     }
 
     fn apply_buy(&mut self, id: OrderId, sym: &Symbol, price: u64, qty: u64, taker: bool) {
-        let o = self.orders[&id].clone();
+        let o = self.orders.get(&id).unwrap().clone();
         let held = o.price as u128 * qty as u128;
         let paid = price as u128 * qty as u128;
         let recv = sym.lot * qty as u128;
@@ -1106,7 +1521,7 @@ impl Ledger {
     }
 
     fn apply_sell(&mut self, id: OrderId, sym: &Symbol, price: u64, qty: u64, taker: bool) {
-        let o = self.orders[&id].clone();
+        let o = self.orders.get(&id).unwrap().clone();
         let sold = sym.lot * qty as u128;
         let recv = price as u128 * qty as u128;
         let (maker, taker_ppm) = self.cfg.fee_pair(o.symbol);
@@ -1127,7 +1542,13 @@ impl Ledger {
     /// and no anomalies. Returns the first violation.
     pub fn check(&self) -> Result<(), String> {
         let mut held: BTreeMap<(AccountId, AssetId), Amount> = BTreeMap::new();
-        for (id, o) in &self.orders {
+        let (mut born, mut canc) = (BTreeSet::new(), BTreeSet::new());
+        for (id, o) in self.orders.iter() {
+            if o.cancelling {
+                canc.insert((o.cancel_at, *id));
+            } else {
+                born.insert((o.born, *id));
+            }
             if order_shard(*id) != self.cfg.shard
                 || (*id & ((1 << SHARD_SHIFT) - 1)) >= self.next_order
             {
@@ -1156,7 +1577,10 @@ impl Ledger {
             }
             *held.entry((o.account, self.hold_asset(o))).or_insert(0) += o.held;
         }
-        for (k, b) in &self.balances {
+        if born != self.by_born || canc != self.by_cancel {
+            return Err("age indexes disagree with the open orders".into());
+        }
+        for (k, b) in self.balances.iter() {
             if b.held != held.get(k).copied().unwrap_or(0) {
                 return Err(format!(
                     "account {} asset {}: held {} != open orders {}",

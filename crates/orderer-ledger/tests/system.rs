@@ -320,15 +320,19 @@ impl Sys {
                 };
                 let price = 95 + self.rng.below(11);
                 let qty = 1 + self.rng.below(6);
+                let ioc = self.rng.below(4) == 0;
                 if let Outcome::Reserved { order, .. } = self.ledger_apply(
                     shard,
-                    Cmd::Reserve {
-                        account,
-                        symbol,
-                        side,
-                        price,
-                        qty,
-                    },
+                    maybe_ioc(
+                        Cmd::Reserve {
+                            account,
+                            symbol,
+                            side,
+                            price,
+                            qty,
+                        },
+                        ioc,
+                    ),
                 ) {
                     self.known_orders.push((account, order));
                 }

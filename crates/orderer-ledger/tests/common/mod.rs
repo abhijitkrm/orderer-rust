@@ -71,6 +71,19 @@ pub struct Matcher {
 
 impl Matcher {
     pub fn submit(&mut self, order: u64, symbol: u32, side: Side, price: u64, qty: u64) {
+        // every 7th order id is immediate-or-cancel, whatever the ledger asked for
+        self.submit_tif(order, symbol, side, price, qty, order % 7 == 0)
+    }
+
+    pub fn submit_tif(
+        &mut self,
+        order: u64,
+        symbol: u32,
+        side: Side,
+        price: u64,
+        qty: u64,
+        ioc: bool,
+    ) {
         let book = self.books.entry(symbol).or_default();
         let mut rem = qty;
         while rem > 0 {
@@ -114,7 +127,7 @@ impl Matcher {
             }
         }
         if rem > 0 {
-            if order % 7 == 0 {
+            if ioc {
                 self.events.push(Event::Closed { order });
             } else {
                 self.seq += 1;
@@ -151,6 +164,13 @@ impl Matcher {
                 price,
                 qty,
             } => self.submit(order, symbol, side, price, qty),
+            OutMsg::SubmitIoc {
+                order,
+                symbol,
+                side,
+                price,
+                qty,
+            } => self.submit_tif(order, symbol, side, price, qty, true),
             OutMsg::Cancel { order, symbol } => self.cancel(order, symbol),
             // phase 2 messages concern the credit slice, not the books
             OutMsg::Grant { .. } | OutMsg::Recall { .. } => {}
@@ -160,5 +180,25 @@ impl Matcher {
 
     pub fn resting(&self) -> usize {
         self.books.values().map(|b| b.len()).sum()
+    }
+}
+
+/// `c` (a `Reserve`) as an immediate-or-cancel reserve when `ioc`.
+pub fn maybe_ioc(c: Cmd, ioc: bool) -> Cmd {
+    match c {
+        Cmd::Reserve {
+            account,
+            symbol,
+            side,
+            price,
+            qty,
+        } if ioc => Cmd::ReserveIoc {
+            account,
+            symbol,
+            side,
+            price,
+            qty,
+        },
+        c => c,
     }
 }

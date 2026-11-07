@@ -13,6 +13,7 @@
 
 mod common;
 use common::*;
+use orderer_ledger::policy::{plan, PolicyConfig, PolicyState};
 use orderer_ledger::*;
 use std::collections::BTreeMap;
 
@@ -136,6 +137,15 @@ impl Group {
                     price,
                     qty,
                 } => self.matcher.submit(order, symbol, side, price, qty),
+                OutMsg::SubmitIoc {
+                    order,
+                    symbol,
+                    side,
+                    price,
+                    qty,
+                } => self
+                    .matcher
+                    .submit_tif(order, symbol, side, price, qty, true),
                 OutMsg::Cancel { order, symbol } => self.matcher.cancel(order, symbol),
                 OutMsg::Grant {
                     account,
@@ -222,6 +232,8 @@ struct Stats {
     mixed_trades: u64,
     returns: u64,
     gaps: u64,
+    policy_lends: u64,
+    policy_recalls: u64,
 }
 
 struct Sys {
@@ -242,6 +254,11 @@ struct Sys {
     phase1: Vec<(u64, u64)>,
     next_ext: u64,
     stats: Stats,
+    /// Policy drivers (volatile, one per shard), the time they read (steps), and
+    /// the accounts the gateways have lately entered orders for.
+    policies: Vec<PolicyState>,
+    tclock: u64,
+    demand: Vec<(u64, u32)>,
 }
 
 fn owes(n: usize, shard: usize, src: u32, e: &Event) -> bool {
@@ -279,6 +296,9 @@ impl Sys {
             phase1: Vec::new(),
             next_ext: 1,
             stats: Stats::default(),
+            policies: vec![PolicyState::new(); n],
+            tclock: 0,
+            demand: Vec::new(),
         }
     }
 
@@ -499,9 +519,16 @@ impl Sys {
             let (account, order) = self.gws[gw].orders[k];
             Body::Cancel { account, order }
         } else {
+            let symbol = SYMS[self.rng.below(2) as usize];
+            let sym = config(0).symbols[&symbol];
+            self.demand.push((account, sym.quote));
+            self.demand.push((account, sym.base));
+            if self.demand.len() > 24 {
+                self.demand.drain(..self.demand.len() - 24);
+            }
             Body::Enter {
                 account,
-                symbol: SYMS[self.rng.below(2) as usize],
+                symbol,
                 side: if self.rng.below(2) == 0 {
                     Side::Buy
                 } else {
@@ -568,15 +595,19 @@ impl Sys {
                 };
                 let price = 95 + self.rng.below(11);
                 let qty = 1 + self.rng.below(6);
+                let ioc = self.rng.below(4) == 0;
                 if let Outcome::Reserved { order, .. } = self.ledger_apply(
                     shard,
-                    Cmd::Reserve {
-                        account,
-                        symbol,
-                        side,
-                        price,
-                        qty,
-                    },
+                    maybe_ioc(
+                        Cmd::Reserve {
+                            account,
+                            symbol,
+                            side,
+                            price,
+                            qty,
+                        },
+                        ioc,
+                    ),
                 ) {
                     self.phase1.push((account, order));
                 }
@@ -629,11 +660,56 @@ impl Sys {
         }
     }
 
+    fn policy_cfg() -> PolicyConfig {
+        PolicyConfig {
+            chunk: ASSETS.iter().map(|a| (*a, 20_000u128)).collect(),
+            low_water_pct: 30,
+            account_cap: ASSETS.iter().map(|a| (*a, 70_000u128)).collect(),
+            group_cap: ASSETS.iter().map(|a| (*a, 200_000u128)).collect(),
+            idle_ns: 120,
+            max_actions: 6,
+        }
+    }
+
+    /// One look of a shard's policy driver: demand is what its accounts' gateways
+    /// have lately traded, credit is what the group says is free. Whatever it
+    /// proposes goes through the ledger like any command; the ledger decides.
+    fn policy_op(&mut self, shard: usize, everything_idle: bool) {
+        let demand: Vec<(u64, u32)> = if everything_idle {
+            Vec::new()
+        } else {
+            self.demand
+                .iter()
+                .copied()
+                .filter(|(a, _)| self.shard_of(*a) == shard)
+                .collect()
+        };
+        let slice = &self.group.slice;
+        let credit = |a: u64, asset: u32| Some(slice.available(a, asset));
+        let cmds = plan(
+            &Self::policy_cfg(),
+            &mut self.policies[shard],
+            &self.shards[shard],
+            &credit,
+            &demand,
+            self.tclock,
+        );
+        for c in cmds {
+            match &c {
+                Cmd::Lend { .. } => self.stats.policy_lends += 1,
+                Cmd::Recall { .. } => self.stats.policy_recalls += 1,
+                c => panic!("the policy proposed {c:?}"),
+            }
+            self.ledger_apply(shard, c);
+        }
+    }
+
     fn crash(&mut self) {
         let shard = self.rng.below(self.n as u64) as usize;
         match self.rng.below(8) {
             0 | 1 => {
                 self.forwarders[shard] = Forwarder::new(shard as u16);
+                self.policies[shard] = PolicyState::new();
                 self.stats.crashes += 1;
             }
             2..=4 => {
@@ -703,9 +779,24 @@ impl Sys {
                 }
             }
             86..=88 => self.crash(),
+            89..=93 => {
+                let s = self.rng.below(self.n as u64) as usize;
+                self.policy_op(s, false);
+            }
             _ => {}
         }
+        self.tclock += 1;
         self.check();
+        if self.tclock % 13 == 0 {
+            for (i, l) in self.shards.iter().enumerate() {
+                assert_eq!(l.digest(), l.digest_from_scratch(), "shard {i}: digest");
+            }
+            assert_eq!(
+                self.group.slice.engine().digest(),
+                self.group.slice.engine().digest_from_scratch(),
+                "slice engine digest"
+            );
+        }
     }
 
     /// Money still to be delivered to the slice, per asset: grants not yet accepted.
@@ -842,6 +933,27 @@ fn run(n: usize, seed: u64, steps: usize) -> Stats {
         }
     }
     s.drain("second drain");
+    // the policy alone returns every idle slice: two looks an idle period apart per
+    // round (the first starts the clock), then the recalls travel and settle
+    for _ in 0..3 {
+        for step in 0..2 {
+            s.tclock += 200;
+            let _ = step;
+            for sh in 0..n {
+                s.policy_op(sh, true);
+            }
+        }
+        s.drain("policy return drain");
+    }
+    for sh in 0..n {
+        for a in ASSETS {
+            assert_eq!(
+                s.shards[sh].lent_total(a),
+                0,
+                "seed {seed}: the policy left funds lent"
+            );
+        }
+    }
     // recall every lent unit: with nothing committed it all comes back
     for _ in 0..2 {
         for account in 1..=ACCOUNTS {
@@ -980,6 +1092,8 @@ fn the_faults_and_the_slice_traffic_actually_happen() {
         t.mixed_trades += s.mixed_trades;
         t.returns += s.returns;
         t.gaps += s.gaps;
+        t.policy_lends += s.policy_lends;
+        t.policy_recalls += s.policy_recalls;
     }
     eprintln!("{t:?}");
     assert!(t.dropped > 100 && t.duplicated > 100 && t.crashes > 50);
@@ -993,4 +1107,6 @@ fn the_faults_and_the_slice_traffic_actually_happen() {
     );
     assert!(t.returns > 20, "recalls must return funds");
     assert!(t.gaps > 10, "reordering must reach the ledger's gap check");
+    assert!(t.policy_lends > 50, "the policy must lend");
+    assert!(t.policy_recalls > 20, "the policy must return idle slices");
 }

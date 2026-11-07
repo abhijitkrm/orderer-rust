@@ -15,6 +15,8 @@
 //!  11 FeeWithdraw asset u32 | amount u128 | external_id u64
 //!  12 Lend      account u64 | asset u32 | amount u128            (phase 2)
 //!  13 Recall    account u64 | asset u32 | amount u128            (phase 2)
+//!  14 ReserveIoc same layout as Reserve (immediate-or-cancel; Reserve, tag 2, is GTC)
+//!  20 At        ts_ns u64 | one command (not an At): the leader's time sidecar
 //! A trade event (kind 1) ends with `taker_is_buy u8` (changed in step 4; the
 //! other layouts are unchanged). Phase 2 adds settle event kinds
 //! 3 SliceIn, 4 SliceOut, 6 Returned (`account u64 | asset u32 | amount u128`)
@@ -125,6 +127,25 @@ pub fn encode_cmd(c: &Cmd) -> Vec<u8> {
             w.side(side);
             w.u64(price);
             w.u64(qty);
+        }
+        Cmd::ReserveIoc {
+            account,
+            symbol,
+            side,
+            price,
+            qty,
+        } => {
+            w.u8(14);
+            w.u64(account);
+            w.u32(symbol);
+            w.side(side);
+            w.u64(price);
+            w.u64(qty);
+        }
+        Cmd::At { ts_ns, ref cmd } => {
+            w.u8(20);
+            w.u64(ts_ns);
+            w.0.extend_from_slice(&encode_cmd(cmd));
         }
         Cmd::Cancel { account, order } => {
             w.u8(3);
@@ -298,6 +319,25 @@ pub fn decode_cmd(b: &[u8]) -> Result<Cmd, DecodeError> {
             price: r.u64()?,
             qty: r.u64()?,
         },
+        14 => Cmd::ReserveIoc {
+            account: r.u64()?,
+            symbol: r.u32()?,
+            side: r.side()?,
+            price: r.u64()?,
+            qty: r.u64()?,
+        },
+        20 => {
+            let ts_ns = r.u64()?;
+            let rest = r.0;
+            if rest.first() == Some(&20) {
+                return Err(DecodeError("nested time stamp"));
+            }
+            r.0 = &[];
+            Cmd::At {
+                ts_ns,
+                cmd: Box::new(decode_cmd(rest)?),
+            }
+        }
         3 => Cmd::Cancel {
             account: r.u64()?,
             order: r.u64()?,
@@ -427,14 +467,14 @@ impl Ledger {
         w.u64(self.anomalies);
         w.u64(self.clock);
         w.u32(self.balances.len() as u32);
-        for ((a, asset), b) in &self.balances {
+        for ((a, asset), b) in self.balances.iter() {
             w.u64(*a);
             w.u32(*asset);
             w.u128(b.available);
             w.u128(b.held);
         }
         w.u32(self.orders.len() as u32);
-        for (id, o) in &self.orders {
+        for (id, o) in self.orders.iter() {
             w.u64(*id);
             w.u64(o.account);
             w.u32(o.symbol);
@@ -457,6 +497,20 @@ impl Ledger {
                     qty,
                 } => {
                     w.u8(1);
+                    w.u64(order);
+                    w.u32(symbol);
+                    w.side(side);
+                    w.u64(price);
+                    w.u64(qty);
+                }
+                OutMsg::SubmitIoc {
+                    order,
+                    symbol,
+                    side,
+                    price,
+                    qty,
+                } => {
+                    w.u8(5);
                     w.u64(order);
                     w.u32(symbol);
                     w.side(side);
@@ -502,7 +556,7 @@ impl Ledger {
             }
         }
         w.u32(self.pending.len() as u32);
-        for (id, (a, asset, amt)) in &self.pending {
+        for (id, (a, asset, amt)) in self.pending.iter() {
             w.u64(*id);
             w.u64(*a);
             w.u32(*asset);
@@ -534,7 +588,7 @@ impl Ledger {
         }
         if v3 {
             w.u32(self.lent.len() as u32);
-            for ((a, asset), v) in &self.lent {
+            for ((a, asset), v) in self.lent.iter() {
                 w.u64(*a);
                 w.u32(*asset);
                 w.u128(*v);
@@ -551,8 +605,9 @@ impl Ledger {
         w.0
     }
 
-    /// SHA-256 of the snapshot: the divergence digest. O(state).
-    pub fn digest(&self) -> [u8; 32] {
+    /// SHA-256 of the whole snapshot. O(state); the cheap, incremental divergence
+    /// digest is [`Ledger::digest`].
+    pub fn deep_digest(&self) -> [u8; 32] {
         sha256(&self.snapshot())
     }
 
@@ -570,7 +625,7 @@ impl Ledger {
         Ok(())
     }
 
-    fn parse(cfg: Config, data: &[u8]) -> Result<Ledger, DecodeError> {
+    pub(crate) fn parse(cfg: Config, data: &[u8]) -> Result<Ledger, DecodeError> {
         let mut r = R(data);
         let v3 = match r.take(4)? {
             m if m == MAGIC => false,
@@ -580,7 +635,7 @@ impl Ledger {
         if r.u16()? != cfg.shard {
             return Err(DecodeError("snapshot is for another shard"));
         }
-        let mut l = Ledger::new(cfg);
+        let mut l = Ledger::new_unchecked(cfg);
         l.next_order = r.u64()?;
         l.outbox_base = r.u64()?;
         l.anomalies = r.u64()?;
@@ -626,6 +681,13 @@ impl Ledger {
                     order: r.u64()?,
                     symbol: r.u32()?,
                 },
+                5 => OutMsg::SubmitIoc {
+                    order: r.u64()?,
+                    symbol: r.u32()?,
+                    side: r.side()?,
+                    price: r.u64()?,
+                    qty: r.u64()?,
+                },
                 3 => OutMsg::Grant {
                     account: r.u64()?,
                     asset: r.u32()?,
@@ -640,6 +702,12 @@ impl Ledger {
             });
         }
         l.outbox = outbox;
+        let mut acc = crate::hashed::ZERO;
+        for (i, m) in l.outbox.iter().enumerate() {
+            acc =
+                crate::hashed::lane_add(acc, crate::ledger::out_cell(l.outbox_base + i as u64, m));
+        }
+        l.outbox_acc = acc;
         for _ in 0..r.u32()? {
             let (s, i) = (r.u32()?, r.u64()?);
             if l.hw.insert(s, i).is_some() {
@@ -652,6 +720,9 @@ impl Ledger {
                 if !set.insert(r.u64()?) {
                     return Err(DecodeError("duplicate id"));
                 }
+            }
+            for id in &set {
+                l.note_id(which, *id);
             }
             if which == 0 {
                 l.deposit_ids = set
@@ -674,9 +745,11 @@ impl Ledger {
         l.adjusted_in = get_map(&mut r)?;
         l.adjusted_out = get_map(&mut r)?;
         for _ in 0..r.u32()? {
-            if !l.adjust_ids.insert(r.u64()?) {
+            let id = r.u64()?;
+            if !l.adjust_ids.insert(id) {
                 return Err(DecodeError("duplicate adjust id"));
             }
+            l.note_id(2, id);
         }
         for _ in 0..r.u32()? {
             l.adjust_log.push_back(Adjustment {
@@ -705,6 +778,7 @@ impl Ledger {
             }
         }
         r.done()?;
+        l.rebuild_indexes();
         Ok(l)
     }
 }

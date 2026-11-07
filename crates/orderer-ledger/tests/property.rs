@@ -158,15 +158,19 @@ impl World {
                 };
                 let price = 95 + r.below(11);
                 let qty = 1 + r.below(6);
+                let ioc = r.below(4) == 0;
                 if let Outcome::Reserved { order, .. } = self.apply(
                     shard,
-                    Cmd::Reserve {
-                        account,
-                        symbol,
-                        side,
-                        price,
-                        qty,
-                    },
+                    maybe_ioc(
+                        Cmd::Reserve {
+                            account,
+                            symbol,
+                            side,
+                            price,
+                            qty,
+                        },
+                        ioc,
+                    ),
                 ) {
                     self.known_orders.push((account, order));
                 }
@@ -275,6 +279,12 @@ impl World {
         for (i, l) in self.shards.iter().enumerate() {
             if let Err(e) = l.check() {
                 panic!("shard {i}: {e}");
+            }
+        }
+        // the incremental digest equals its definition, taken at irregular times
+        if self.rng.below(16) == 0 {
+            for (i, l) in self.shards.iter().enumerate() {
+                assert_eq!(l.digest(), l.digest_from_scratch(), "shard {i}: digest");
             }
         }
     }

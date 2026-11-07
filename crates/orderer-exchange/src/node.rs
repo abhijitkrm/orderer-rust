@@ -300,8 +300,25 @@ impl StateMachine for LedgerNodeSm {
     fn restore(&mut self, _index: Index, data: &[u8]) -> Result<(), String> {
         self.inner.lock().expect("ledger lock").restore(data)
     }
-    /// O(state): the SHA-256 of the snapshot. Keep `--digest-every` large.
+    /// Cheap: the ledger's incremental digest (cost: the entries changed since the
+    /// last one) and the session table (bounded by [`MAX_SESSIONS`]).
     fn digest(&mut self, _index: Index) -> Option<[u8; 32]> {
+        let g = self.inner.lock().expect("ledger lock");
+        let mut b = b"orderer-ledger-node-digest/1".to_vec();
+        b.extend_from_slice(&(g.order.len() as u32).to_le_bytes());
+        for client in &g.order {
+            let (seq, reply) = &g.sessions[client];
+            b.extend_from_slice(&client.to_le_bytes());
+            b.extend_from_slice(&seq.to_le_bytes());
+            b.extend_from_slice(&(reply.len() as u32).to_le_bytes());
+            b.extend_from_slice(reply);
+        }
+        b.extend_from_slice(&g.ledger.digest());
+        Some(sha256(&b))
+    }
+    /// O(state): the SHA-256 of the whole snapshot, for on-demand checks. The
+    /// audit wrapper in `ledger-node` must forward this as well as `digest`.
+    fn deep_digest(&mut self, _index: Index) -> Option<[u8; 32]> {
         Some(sha256(&self.inner.lock().expect("ledger lock").snapshot()))
     }
 }

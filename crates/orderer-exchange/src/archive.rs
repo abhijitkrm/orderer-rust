@@ -46,7 +46,7 @@ impl Part {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct ArchiveState {
     pub parts: Vec<Part>,
     /// Side of every order forwarded and not yet finished, by order id.
@@ -54,6 +54,11 @@ pub struct ArchiveState {
     /// Trades whose orders were unknown: should stay zero.
     pub unmapped: u64,
     pub retain: usize,
+    /// The durable store behind the window (`store.rs`), if one is attached. Not
+    /// part of the replicated state, the snapshot or the digest.
+    pub store: Option<crate::store::EventStore>,
+    /// Why the store was dropped, if it failed; the window keeps serving.
+    pub store_error: Option<String>,
 }
 
 pub enum Mapped {
@@ -119,6 +124,33 @@ impl ArchiveState {
             sides: BTreeMap::new(),
             unmapped: 0,
             retain: retain.max(1),
+            store: None,
+            store_error: None,
+        }
+    }
+
+    /// Attach a recovered store, bringing it into line with every window.
+    pub fn adopt_store(&mut self, store: Option<crate::store::EventStore>) {
+        self.store = store;
+        let Some(st) = self.store.as_mut() else {
+            return;
+        };
+        for (i, p) in self.parts.iter().enumerate() {
+            if let Err(e) = st.attach(i, p.base, &p.events) {
+                self.store_error = Some(e.to_string());
+                self.store = None;
+                return;
+            }
+        }
+    }
+
+    /// Flush and fsync the store (called before a snapshot returns).
+    pub fn sync_store(&mut self) {
+        if let Some(st) = self.store.as_mut() {
+            if let Err(e) = st.sync() {
+                self.store_error = Some(e.to_string());
+                self.store = None;
+            }
         }
     }
 
@@ -127,11 +159,18 @@ impl ArchiveState {
             Mapped::Emit(e) => {
                 let retain = self.retain;
                 let p = &mut self.parts[partition];
+                let idx = p.next;
                 p.events.push_back(e);
                 p.next += 1;
                 while p.events.len() > retain {
                     p.events.pop_front();
                     p.base += 1;
+                }
+                if let Some(st) = self.store.as_mut() {
+                    if let Err(err) = st.append(partition, idx, &e) {
+                        self.store_error = Some(err.to_string());
+                        self.store = None;
+                    }
                 }
             }
             Mapped::Skip => {}
@@ -193,6 +232,8 @@ impl ArchiveState {
             sides,
             unmapped,
             retain: retain.max(1),
+            store: None,
+            store_error: None,
         })
     }
 }
@@ -255,6 +296,25 @@ impl TierView {
     /// The ledger `source` id of partition `p`'s stream.
     pub fn source_of(&self, partition: u32) -> u32 {
         self.source_base + partition
+    }
+
+    /// Counters of the durable store behind the archive, if one is attached.
+    pub fn store_stats(&self) -> Option<crate::store::StoreStats> {
+        self.archive
+            .lock()
+            .expect("archive lock")
+            .store
+            .as_ref()
+            .map(|s| s.stats)
+    }
+
+    /// Why the durable store was dropped, if it failed (the window keeps serving).
+    pub fn store_error(&self) -> Option<String> {
+        self.archive
+            .lock()
+            .expect("archive lock")
+            .store_error
+            .clone()
     }
 
     /// The next outbox index expected from ledger `shard`; everything below it
@@ -321,14 +381,26 @@ impl TierView {
                     .map(|c| c.read(from, max).map_err(|base| Truncated { base }));
             }
         }
-        let a = self.archive.lock().expect("archive lock");
-        let p = a
-            .parts
-            .get(source.checked_sub(self.source_base)? as usize)?;
+        let mut a = self.archive.lock().expect("archive lock");
+        let stream = source.checked_sub(self.source_base)? as usize;
+        let (pbase, pnext) = {
+            let p = a.parts.get(stream)?;
+            (p.base, p.next)
+        };
         let from = from.max(1);
-        if from < p.base {
-            return Some(Err(Truncated { base: p.base }));
+        if from < pbase {
+            // older than the window: the durable store, if it has it
+            if let Some(st) = a.store.as_mut() {
+                return Some(match st.read(stream, from, max) {
+                    Ok(Ok(v)) => Ok(v),
+                    Ok(Err(base)) => Err(Truncated { base }),
+                    Err(_) => Err(Truncated { base: pbase }),
+                });
+            }
+            return Some(Err(Truncated { base: pbase }));
         }
+        let _ = pnext;
+        let p = &a.parts[stream];
         let skip = (from - p.base) as usize;
         Some(Ok(p
             .events

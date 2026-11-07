@@ -21,7 +21,9 @@
 pub mod credit;
 
 use crate::archive::{ArchiveEgress, ArchiveState, Shared, TierView};
-use crate::wire::{decode_forward, decode_slice_req, Rd, SliceBody, TAG_FORWARD, TAG_SLICE};
+use crate::wire::{
+    decode_forward, decode_slice_req, Rd, SliceBody, TAG_EPOCH, TAG_FORWARD, TAG_SLICE,
+};
 use credit::{CreditConfig, CreditState, SharedCredit};
 use orderer::{EventDigest, Initial, PartitionMap, Pipeline};
 use orderer_cluster::codec::encode_batch;
@@ -170,6 +172,19 @@ impl<C: MatchingCore> MatchingTierSm<C> {
         self
     }
 
+    /// Keep the archive on disk behind the in-memory window (`store.rs`): readers
+    /// older than the window are served from segment files, and the window's events
+    /// survive a restart. Recovery runs here; reconciling with the replica's state
+    /// happens when its snapshot is restored (or as events are replayed).
+    pub fn with_archive_store(self, cfg: crate::store::StoreConfig) -> std::io::Result<Self> {
+        let store = crate::store::EventStore::open(cfg, self.partitions as usize)?;
+        self.archive
+            .lock()
+            .expect("archive lock")
+            .adopt_store(Some(store));
+        Ok(self)
+    }
+
     /// Record every applied command batch, in order (tests and audit trails).
     pub fn with_tap(mut self, tap: Tap) -> Self {
         self.inner = self.inner.with_tap(tap);
@@ -197,15 +212,32 @@ impl<C: MatchingCore> MatchingTierSm<C> {
                         side,
                         price,
                         qty,
-                    } => {
-                        let price = i64::try_from(price).unwrap_or(-1);
-                        let (mside, lside) = match side {
-                            Side::Buy => (MSide::Bid, Side::Buy),
-                            Side::Sell => (MSide::Ask, Side::Sell),
-                        };
-                        archive.sides.insert(order, lside);
-                        cmds.push((symbol, Command::new(order, mside, price, qty, Tif::Gtc)));
-                    }
+                    } => cmds.push(new_order(
+                        &mut archive.sides,
+                        order,
+                        symbol,
+                        side,
+                        price,
+                        qty,
+                        Tif::Gtc,
+                    )),
+                    // An immediate-or-cancel order: what does not trade is closed by
+                    // the matcher, which the archive turns into a `Closed` event.
+                    OutMsg::SubmitIoc {
+                        order,
+                        symbol,
+                        side,
+                        price,
+                        qty,
+                    } => cmds.push(new_order(
+                        &mut archive.sides,
+                        order,
+                        symbol,
+                        side,
+                        price,
+                        qty,
+                        Tif::Ioc,
+                    )),
                     OutMsg::Cancel { order, symbol } => {
                         cmds.push((symbol, Command::Cancel { order_id: order }));
                     }
@@ -270,6 +302,11 @@ impl<C: MatchingCore> MatchingTierSm<C> {
             if matches!(c.clients.get(&q.client), Some((last, _)) if q.seq <= *last) {
                 return;
             }
+            let tif = if matches!(q.body, SliceBody::EnterIoc { .. }) {
+                Tif::Ioc
+            } else {
+                Tif::Gtc
+            };
             let res = match q.body {
                 SliceBody::Enter {
                     account,
@@ -277,15 +314,24 @@ impl<C: MatchingCore> MatchingTierSm<C> {
                     side,
                     price,
                     qty,
+                }
+                | SliceBody::EnterIoc {
+                    account,
+                    symbol,
+                    side,
+                    price,
+                    qty,
                 } => match c.slice.enter(account, symbol, side, price, qty) {
                     Ok(order) => {
-                        let (mside, lside) = match side {
-                            Side::Buy => (MSide::Bid, Side::Buy),
-                            Side::Sell => (MSide::Ask, Side::Sell),
-                        };
-                        archive.sides.insert(order, lside);
-                        let price = i64::try_from(price).unwrap_or(-1);
-                        cmds.push((symbol, Command::new(order, mside, price, qty, Tif::Gtc)));
+                        cmds.push(new_order(
+                            &mut archive.sides,
+                            order,
+                            symbol,
+                            side,
+                            price,
+                            qty,
+                            tif,
+                        ));
                         Ok(order)
                     }
                     Err(r) => Err(r),
@@ -306,14 +352,14 @@ impl<C: MatchingCore> MatchingTierSm<C> {
 
     /// Count an applied entry; at every `epoch`-th, settle the matcher's new events
     /// into the slice and report (see `credit.rs`).
-    fn credit_tick(&mut self, index: Index) {
+    fn credit_tick(&mut self, index: Index, force: bool) {
         let due = {
             let mut g = self.credit.lock().expect("credit lock");
             match g.as_mut() {
                 None => return,
                 Some(c) => {
                     c.entries += 1;
-                    c.entries % c.epoch == 0
+                    force || c.entries % c.epoch == 0
                 }
             }
         };
@@ -371,20 +417,53 @@ impl<C: MatchingCore> MatchingTierSm<C> {
     }
 }
 
+/// The matcher command for an order entering the book; records the order's side
+/// for the archive. A price above `i64::MAX` becomes -1, which the matcher rejects.
+fn new_order(
+    sides: &mut BTreeMap<u64, Side>,
+    order: u64,
+    symbol: orderer_core::Symbol,
+    side: Side,
+    price: u64,
+    qty: u64,
+    tif: Tif,
+) -> (orderer_core::Symbol, Command) {
+    let price = i64::try_from(price).unwrap_or(-1);
+    let mside = match side {
+        Side::Buy => MSide::Bid,
+        Side::Sell => MSide::Ask,
+    };
+    sides.insert(order, side);
+    (symbol, Command::new(order, mside, price, qty, tif))
+}
+
 impl<C: MatchingCore> StateMachine for MatchingTierSm<C> {
     fn apply(&mut self, index: Index, entry: &Entry) {
         match entry.data.first() {
             Some(&TAG_FORWARD) => self.apply_forward(index, &entry.data),
             Some(&TAG_SLICE) => self.apply_slice_req(index, &entry.data),
+            Some(&TAG_EPOCH) => {
+                // closes the credit epoch now (see `wire::TAG_EPOCH`)
+                if entry.data != crate::wire::encode_epoch_tick() {
+                    self.bad_forwards += 1;
+                    self.credit_tick(index, false);
+                } else {
+                    self.credit_tick(index, true);
+                }
+                return;
+            }
             _ => self.inner.apply(index, entry),
         }
-        self.credit_tick(index);
+        self.credit_tick(index, false);
     }
 
     fn snapshot(&mut self, index: Index) -> Vec<u8> {
         // The inner snapshot drains the pipeline, so the archive is complete up
         // to this point when it is read below.
         let inner = self.inner.snapshot(index);
+        // the store is synced before a snapshot exists: the log is compacted only
+        // after one, and what the store holds below it is then never regenerated
+        self.archive.lock().expect("archive lock").sync_store();
         let mut out = Vec::with_capacity(64 + inner.len());
         let credit = self.credit.lock().expect("credit lock");
         out.extend_from_slice(if credit.is_some() {
@@ -436,7 +515,12 @@ impl<C: MatchingCore> StateMachine for MatchingTierSm<C> {
         // events) before the new one exists; only then is the archive replaced.
         self.inner.restore(index, inner)?;
         *self.intake.lock().expect("intake lock") = intake;
-        *self.archive.lock().expect("archive lock") = archive;
+        {
+            let mut a = self.archive.lock().expect("archive lock");
+            let store = a.store.take();
+            *a = archive;
+            a.adopt_store(store);
+        }
         if let Some(bytes) = credit_bytes {
             let mut g = self.credit.lock().expect("credit lock");
             let c = g.as_mut().expect("credit mode");

@@ -38,7 +38,12 @@ impl StateMachine for LedgerSm {
     fn restore(&mut self, _index: Index, data: &[u8]) -> Result<(), String> {
         self.ledger.restore(data)
     }
+    /// Incremental: the cost is the entries changed since the last digest.
     fn digest(&mut self, _index: Index) -> Option<[u8; 32]> {
         Some(self.ledger.digest())
+    }
+    /// SHA-256 of the whole snapshot; O(state), for on-demand checks.
+    fn deep_digest(&mut self, _index: Index) -> Option<[u8; 32]> {
+        Some(self.ledger.deep_digest())
     }
 }

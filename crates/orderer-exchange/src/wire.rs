@@ -9,7 +9,7 @@
 //!   4   u64  first outbox index
 //!   12  u32  n
 //!   16  n x message (30 bytes)
-//! message: kind u8 (1 submit, 2 cancel) | order u64 | symbol u32 |
+//! message: kind u8 (1 submit, 5 submit IOC, 2 cancel) | order u64 | symbol u32 |
 //!          side u8 (0 buy, 1 sell) | price u64 | qty u64
 //!          (a cancel carries side 0, price 0, qty 0)
 //! ```
@@ -101,6 +101,20 @@ fn put_msg(out: &mut Vec<u8>, m: &OutMsg) {
             out.extend_from_slice(&price.to_le_bytes());
             out.extend_from_slice(&qty.to_le_bytes());
         }
+        OutMsg::SubmitIoc {
+            order,
+            symbol,
+            side,
+            price,
+            qty,
+        } => {
+            out.push(5);
+            out.extend_from_slice(&order.to_le_bytes());
+            out.extend_from_slice(&symbol.to_le_bytes());
+            put_side(out, side);
+            out.extend_from_slice(&price.to_le_bytes());
+            out.extend_from_slice(&qty.to_le_bytes());
+        }
         OutMsg::Cancel { order, symbol } => {
             out.push(2);
             out.extend_from_slice(&order.to_le_bytes());
@@ -143,6 +157,13 @@ fn get_msg(r: &mut Rd) -> Result<OutMsg, WireError> {
     let (price, qty) = (r.u64()?, r.u64()?);
     match kind {
         1 => Ok(OutMsg::Submit {
+            order,
+            symbol,
+            side,
+            price,
+            qty,
+        }),
+        5 => Ok(OutMsg::SubmitIoc {
             order,
             symbol,
             side,
@@ -322,9 +343,29 @@ pub fn get_event(r: &mut Rd) -> Result<Event, WireError> {
 /// through `TierView::slice_result`.
 pub const TAG_SLICE: u8 = 6;
 
+/// **Entry tag 7, epoch tick**: `7 | version (1)`. A no-op for the pipeline. In
+/// credit mode it counts as an applied entry and *closes the credit epoch now*:
+/// the matcher's new events are settled into the slice and reported, as at every
+/// `epoch`-th entry. A quiet group has no entries to count, so its node proposes
+/// one of these periodically; being in the log, it closes the epoch at the same
+/// point on every replica. Outside credit mode it does nothing.
+pub const TAG_EPOCH: u8 = 7;
+
+pub fn encode_epoch_tick() -> Vec<u8> {
+    vec![TAG_EPOCH, 1]
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SliceBody {
     Enter {
+        account: u64,
+        symbol: u32,
+        side: Side,
+        price: u64,
+        qty: u64,
+    },
+    /// Like `Enter`, immediate-or-cancel: what does not trade at once is closed.
+    EnterIoc {
         account: u64,
         symbol: u32,
         side: Side,
@@ -363,6 +404,20 @@ pub fn encode_slice_req(q: &SliceReq) -> Vec<u8> {
             out.extend_from_slice(&price.to_le_bytes());
             out.extend_from_slice(&qty.to_le_bytes());
         }
+        SliceBody::EnterIoc {
+            account,
+            symbol,
+            side,
+            price,
+            qty,
+        } => {
+            out.push(3);
+            out.extend_from_slice(&account.to_le_bytes());
+            out.extend_from_slice(&symbol.to_le_bytes());
+            put_side(&mut out, side);
+            out.extend_from_slice(&price.to_le_bytes());
+            out.extend_from_slice(&qty.to_le_bytes());
+        }
         SliceBody::Cancel { account, order } => {
             out.push(2);
             out.extend_from_slice(&account.to_le_bytes());
@@ -383,6 +438,13 @@ pub fn decode_slice_req(b: &[u8]) -> Result<SliceReq, WireError> {
     let (client, seq) = (r.u64()?, r.u64()?);
     let body = match r.u8()? {
         1 => SliceBody::Enter {
+            account: r.u64()?,
+            symbol: r.u32()?,
+            side: get_side(&mut r)?,
+            price: r.u64()?,
+            qty: r.u64()?,
+        },
+        3 => SliceBody::EnterIoc {
             account: r.u64()?,
             symbol: r.u32()?,
             side: get_side(&mut r)?,

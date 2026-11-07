@@ -13,7 +13,9 @@
 
 mod codec;
 mod flow;
+pub mod hashed;
 mod ledger;
+pub mod policy;
 mod slice;
 mod sm;
 

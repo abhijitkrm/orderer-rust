@@ -49,8 +49,11 @@ impl Slice {
     pub fn new(mut cfg: Config, group: u16) -> Slice {
         assert!(group < SLICE_SHARD_BIT, "group number out of range");
         cfg.shard = SLICE_SHARD_BIT | group;
+        if let Err(e) = cfg.validate_reference() {
+            panic!("invalid slice config: {e}");
+        }
         Slice {
-            engine: Ledger::new(cfg),
+            engine: Ledger::new_unchecked(cfg),
             p: BTreeMap::new(),
             q: BTreeMap::new(),
             fee_reported: BTreeMap::new(),
