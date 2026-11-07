@@ -282,16 +282,17 @@ fn deposits_orders_trades_and_an_audit_through_the_real_gateway_and_relays() {
     ));
     assert_eq!(r, Reply::Rejected("Insufficient".into()));
 
-    let mut fwd: Vec<ForwarderRelay> = (0..2).map(ForwarderRelay::new).collect();
-    let mut set: Vec<SettlerRelay> = (0..2)
-        .map(|s| SettlerRelay::new(s, vec![100, 101]))
-        .collect();
+    let mut fwd: Vec<ForwarderRelay> = (0..2).map(|s| ForwarderRelay::new(s, 1)).collect();
+    let mut set = SettlerRelay::new(vec![0, 1], vec![(100, 0), (101, 0)]);
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
         for s in 0..2 {
-            fwd[s].step(&mut ledger[s], &mut tc).unwrap();
-            set[s].step(&mut ledger[s], &mut tc).unwrap();
+            fwd[s]
+                .step(&mut ledger[s], std::slice::from_mut(&mut tc))
+                .unwrap();
         }
+        set.step(&mut ledger, std::slice::from_mut(&mut tc))
+            .unwrap();
         let both_closed = ledger[0].order(true, bo).unwrap().is_none()
             && ledger[1].order(true, so).unwrap().is_none();
         if both_closed {
@@ -321,8 +322,8 @@ fn deposits_orders_trades_and_an_audit_through_the_real_gateway_and_relays() {
     // the audit, from outside: clean and caught up, conservation checked
     let mut audit = Audit::new(
         gws.iter().map(|a| GatewayClient::new(vec![*a])).collect(),
-        TierClient::new(vec![tier_srv.addr]),
-        vec![100, 101],
+        vec![TierClient::new(vec![tier_srv.addr])],
+        vec![(100, 0), (101, 0)],
         demo_config,
     );
     let rep = audit.round().unwrap();
@@ -350,5 +351,126 @@ fn deposits_orders_trades_and_an_audit_through_the_real_gateway_and_relays() {
     );
     drop(keep);
     tier.crash();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn batch_entry(cmds: &[Cmd]) -> Vec<u8> {
+    let mut v = vec![orderer_exchange::node::TAG_BATCH];
+    v.extend_from_slice(&(cmds.len() as u32).to_le_bytes());
+    for c in cmds {
+        let e = encode_cmd(c);
+        v.extend_from_slice(&(e.len() as u32).to_le_bytes());
+        v.extend_from_slice(&e);
+    }
+    v
+}
+
+#[test]
+fn a_batch_entry_applies_its_commands_in_order_and_answers_each() {
+    let (mut sm, view) = LedgerNodeSm::new(demo_config(0));
+    sm.apply(1, &entry(session(7, 1, &deposit(1))));
+    let mut orders = Vec::new();
+    for i in 0..3u64 {
+        sm.apply(2 + i, &entry(session(7, 2 + i, &reserve())));
+        let Reply::Reserved { order, .. } = Reply::decode(&view.reply(2 + i).unwrap()).unwrap()
+        else {
+            panic!()
+        };
+        orders.push(order);
+    }
+    let closed = |prev, idx, o| Cmd::Settle {
+        source: 0,
+        prev,
+        idx,
+        event: orderer_ledger::Event::Closed { order: o },
+    };
+    // a chained batch: all three settle, in order, from one entry
+    let b = vec![
+        closed(0, 1, orders[0]),
+        closed(1, 2, orders[1]),
+        closed(2, 3, orders[2]),
+    ];
+    sm.apply(10, &entry(batch_entry(&b)));
+    let replies = Reply::decode_batch(&view.reply(10).unwrap()).unwrap();
+    assert_eq!(replies, vec![Reply::Other("Settled".into()); 3]);
+    assert_eq!(view.with(|l| l.open_orders()), 0);
+    assert_eq!(view.with(|l| l.high_water(0)), Some(3));
+    // the same batch again: every command is a duplicate, nothing changes
+    sm.apply(11, &entry(batch_entry(&b)));
+    let replies = Reply::decode_batch(&view.reply(11).unwrap()).unwrap();
+    assert_eq!(replies, vec![Reply::Other("Duplicate".into()); 3]);
+    // a chain with a hole: the first is a gap, so is everything after it
+    let hole = vec![closed(7, 9, 1), closed(9, 10, 2)];
+    sm.apply(12, &entry(batch_entry(&hole)));
+    let replies = Reply::decode_batch(&view.reply(12).unwrap()).unwrap();
+    assert_eq!(replies, vec![Reply::Rejected("Gap".into()); 2]);
+    assert_eq!(view.with(|l| l.high_water(0)), Some(3));
+    assert_eq!(view.with(|l| l.anomalies()), 0);
+    // broken framing applies nothing and is counted
+    let mut bad = batch_entry(&b);
+    bad.pop();
+    sm.apply(13, &entry(bad));
+    assert_eq!(
+        Reply::decode(&view.reply(13).unwrap()).unwrap(),
+        Reply::Undecodable
+    );
+    let mut trailing = batch_entry(&b);
+    trailing.push(0);
+    sm.apply(14, &entry(trailing));
+    assert_eq!(
+        Reply::decode(&view.reply(14).unwrap()).unwrap(),
+        Reply::Undecodable
+    );
+    let mut over = vec![orderer_exchange::node::TAG_BATCH];
+    over.extend_from_slice(&1_000_000u32.to_le_bytes());
+    sm.apply(15, &entry(over));
+    assert_eq!(
+        Reply::decode(&view.reply(15).unwrap()).unwrap(),
+        Reply::Undecodable
+    );
+    assert_eq!(view.with(|l| l.anomalies()), 3);
+    // an undecodable command inside a well-framed batch is answered and counted too
+    let mut v = vec![orderer_exchange::node::TAG_BATCH];
+    v.extend_from_slice(&1u32.to_le_bytes());
+    v.extend_from_slice(&2u32.to_le_bytes());
+    v.extend_from_slice(&[0xEE, 0xEE]);
+    sm.apply(16, &entry(v));
+    let replies = Reply::decode_batch(&view.reply(16).unwrap()).unwrap();
+    assert_eq!(replies, vec![Reply::Undecodable]);
+    assert_eq!(view.with(|l| l.anomalies()), 4);
+}
+
+#[test]
+fn a_batch_goes_through_the_real_gateway() {
+    let dir = temp("batch");
+    let (sm, view) = LedgerNodeSm::new(demo_config(0));
+    let r = Replica::start(cfg1(&dir, "l"), sm).unwrap();
+    let g = GatewayServer::start("127.0.0.1:0".parse().unwrap(), r.handle(), view).unwrap();
+    let mut c = GatewayClient::new(vec![g.addr]);
+    c.budget = Duration::from_secs(10);
+    c.cmd(1, 1, &deposit(1)).unwrap();
+    let mut ids = Vec::new();
+    for i in 0..4u64 {
+        let Reply::Reserved { order, .. } = c.cmd(1, 2 + i, &reserve()).unwrap() else {
+            panic!()
+        };
+        ids.push(order);
+    }
+    let cmds: Vec<Cmd> = ids
+        .iter()
+        .enumerate()
+        .map(|(i, o)| Cmd::Settle {
+            source: 3,
+            prev: i as u64,
+            idx: i as u64 + 1,
+            event: orderer_ledger::Event::Closed { order: *o },
+        })
+        .collect();
+    let replies = c.raw_batch(&cmds).unwrap();
+    assert_eq!(replies, vec![Reply::Other("Settled".into()); 4]);
+    assert_eq!(c.state(true, &[3]).unwrap().marks, vec![4]);
+    assert_eq!(c.state(true, &[]).unwrap().open_orders, 0);
+    drop(g);
+    r.crash();
     let _ = std::fs::remove_dir_all(&dir);
 }

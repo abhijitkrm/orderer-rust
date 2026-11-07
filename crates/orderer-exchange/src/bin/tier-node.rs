@@ -2,17 +2,21 @@
 //! client port (status, state hash) and exchange port (forward, cursor, read).
 //!
 //!   tier-node --id N --members 0=HOST:PORT,... --client HOST:PORT --exchange HOST:PORT
-//!             --dir DIR [--partitions P] [--source-base B] [--retain N]
+//!             --dir DIR --config FILE [--group G] [--retain N]
 //!             [--compact-every N] [--digest-every N] [--fsync on|off|relaxed[:MS]]
 //!
-//! The cluster key, if any, is read from `ORDERER_KEY` (not argv). The exchange
-//! port is unauthenticated: private network only.
+//! This node is a replica of matching group G (default 0) of the config. Its
+//! partition count and stream ids come from the config. The key, if any, is read
+//! from `ORDERER_KEY` (not argv); it authenticates the client port and the
+//! exchange port. The replica transport uses a key derived from it and the config
+//! checksum, so a replica started with a different config cannot join the group.
 
 use orderer::{PartitionMap, Pipeline};
 use orderer_cluster::client::ClientServer;
 use orderer_cluster::{Replica, ReplicaConfig};
 use orderer_consensus::NodeId;
 use orderer_core::{BookConfig, FifoCore};
+use orderer_exchange::cli::Setup;
 use orderer_exchange::{ExchangeServer, MatchingTierSm, TierConfig};
 use std::net::SocketAddr;
 use std::process::exit;
@@ -31,7 +35,7 @@ fn main() {
         None::<SocketAddr>,
         String::new(),
     );
-    let (mut partitions, mut source_base, mut retain) = (4u32, 0u32, 1usize << 20);
+    let (mut config, mut group, mut retain) = (String::new(), 0u32, 1usize << 20);
     let (mut compact_every, mut digest_every, mut fsync) = (0u64, 0u64, true);
     let mut fsync_interval = None;
     let mut args = std::env::args().skip(1);
@@ -63,16 +67,8 @@ fn main() {
                 )
             }
             "--dir" => dir = v("--dir"),
-            "--partitions" => {
-                partitions = v("--partitions")
-                    .parse()
-                    .unwrap_or_else(|_| die("--partitions"))
-            }
-            "--source-base" => {
-                source_base = v("--source-base")
-                    .parse()
-                    .unwrap_or_else(|_| die("--source-base"))
-            }
+            "--config" => config = v("--config"),
+            "--group" => group = v("--group").parse().unwrap_or_else(|_| die("--group")),
             "--retain" => retain = v("--retain").parse().unwrap_or_else(|_| die("--retain")),
             "--compact-every" => {
                 compact_every = v("--compact-every")
@@ -110,9 +106,19 @@ fn main() {
     let id = id.unwrap_or_else(|| die("--id is required"));
     let client = client.unwrap_or_else(|| die("--client is required"));
     let exchange = exchange.unwrap_or_else(|| die("--exchange is required"));
-    if members.is_empty() || dir.is_empty() {
-        die("--members and --dir are required");
+    if members.is_empty() || dir.is_empty() || config.is_empty() {
+        die("--members, --dir and --config are required");
     }
+    let setup = Setup::load(&config).unwrap_or_else(|e| die(&e));
+    if group >= setup.cfg.matching_groups {
+        die(&format!(
+            "--group {group} but the config has {} matching groups",
+            setup.cfg.matching_groups
+        ));
+    }
+    let partitions = setup.cfg.partitions;
+    let source_base = setup.cfg.source_base(group);
+    let groups = setup.cfg.matching_groups;
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(&format!("{dir}: {e}")));
 
     let mut cfg = ReplicaConfig::new(id, members, format!("{dir}/state"));
@@ -121,11 +127,8 @@ fn main() {
     cfg.compact_every = compact_every;
     cfg.digest_every = digest_every;
     cfg.max_pending = 1 << 16;
-    let key = std::env::var("ORDERER_KEY")
-        .ok()
-        .filter(|k| !k.is_empty())
-        .map(String::into_bytes);
-    cfg.auth_key = key.clone();
+    let key = setup.auth.key.clone();
+    cfg.auth_key = setup.auth.replica_key();
 
     let (sm, view) = MatchingTierSm::<FifoCore>::new(
         BookConfig::default(),
@@ -146,12 +149,16 @@ fn main() {
             b.build().expect("pipeline")
         },
     );
+    let (sm, view) = (sm.with_group(group, groups), view);
     let replica = Replica::start(cfg, sm).unwrap_or_else(|e| die(&format!("start: {e}")));
     let _client = ClientServer::start_with_key(client, replica.handle(), key)
         .unwrap_or_else(|e| die(&format!("client port: {e}")));
-    let _server = ExchangeServer::start(exchange, replica.handle(), view)
+    let _server = ExchangeServer::start_with(exchange, replica.handle(), view, setup.auth.clone())
         .unwrap_or_else(|e| die(&format!("exchange port: {e}")));
-    println!("tier-node {id} ready (client {client}, exchange {exchange})");
+    println!(
+        "tier-node group {group} id {id} ready (client {client}, exchange {exchange}, config {})",
+        &orderer_cluster::sha256::hex(&setup.cfg.checksum())[..16]
+    );
     loop {
         std::thread::sleep(Duration::from_secs(3600));
     }

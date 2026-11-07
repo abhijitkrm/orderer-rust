@@ -1,7 +1,7 @@
 //! exchange-audit: checks the whole exchange from outside.
 //!
-//!   exchange-audit --ledgers A,B,C;D,E,F --tier A,B,C --partitions P --source-base B
-//!                  --ledger-clients A,B,C;D,E,F --tier-clients A,B,C
+//!   exchange-audit --config FILE --ledgers A,B,C;D,E,F --tier "A,B,C;D,E,F"
+//!                  --ledger-clients A,B,C;D,E,F --tier-clients "A,B,C;D,E,F"
 //!                  [--interval-ms 1000]                     continuous
 //!                  [--once --wait SECS [--expect-idle] [--acked FILE]]
 //!                                                           wait for convergence, check, exit
@@ -15,7 +15,8 @@
 //! ports (for state digests), each in node-id order, one `;`-separated list per shard.
 
 use orderer_exchange::audit::{compare_digests, Audit};
-use orderer_exchange::{demo_config, GatewayClient, TierClient};
+use orderer_exchange::cli::{parse_groups, Setup};
+use orderer_exchange::{GatewayClient, TierClient};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::process::exit;
@@ -26,20 +27,10 @@ fn die(msg: &str) -> ! {
     exit(2)
 }
 
-fn addrs(s: &str) -> Vec<SocketAddr> {
-    s.split(',')
-        .map(|a| {
-            a.parse()
-                .unwrap_or_else(|_| die(&format!("bad address {a}")))
-        })
-        .collect()
-}
-
 fn main() {
     let (mut ledgers, mut tier, mut lclients, mut tclients) =
         (String::new(), String::new(), String::new(), String::new());
-    let (mut partitions, mut source_base, mut interval, mut once, mut wait) =
-        (4u32, 0u32, 1000u64, false, 60u64);
+    let (mut config, mut interval, mut once, mut wait) = (String::new(), 1000u64, false, 60u64);
     let mut acked = None::<String>;
     let mut expect_idle = false;
     let mut args = std::env::args().skip(1);
@@ -53,16 +44,7 @@ fn main() {
             "--tier" => tier = v("--tier"),
             "--ledger-clients" => lclients = v("--ledger-clients"),
             "--tier-clients" => tclients = v("--tier-clients"),
-            "--partitions" => {
-                partitions = v("--partitions")
-                    .parse()
-                    .unwrap_or_else(|_| die("--partitions"))
-            }
-            "--source-base" => {
-                source_base = v("--source-base")
-                    .parse()
-                    .unwrap_or_else(|_| die("--source-base"))
-            }
+            "--config" => config = v("--config"),
             "--interval-ms" => {
                 interval = v("--interval-ms")
                     .parse()
@@ -75,28 +57,32 @@ fn main() {
             other => die(&format!("unknown argument {other}")),
         }
     }
-    if ledgers.is_empty() || tier.is_empty() {
-        die("--ledgers and --tier are required");
+    if ledgers.is_empty() || tier.is_empty() || config.is_empty() {
+        die("--config, --ledgers and --tier are required");
     }
-    let key = std::env::var("ORDERER_KEY")
-        .ok()
-        .filter(|k| !k.is_empty())
-        .map(String::into_bytes);
-    let gws: Vec<GatewayClient> = ledgers
-        .split(';')
-        .map(|g| GatewayClient::new(addrs(g)))
+    let setup = Setup::load(&config).unwrap_or_else(|e| die(&e));
+    let (cfg, auth) = (setup.cfg.clone(), setup.auth.clone());
+    let key = auth.key.clone();
+    let gws: Vec<GatewayClient> = parse_groups(&ledgers)
+        .unwrap_or_else(|e| die(&e))
+        .into_iter()
+        .map(|g| GatewayClient::with_auth(g, auth.clone()))
         .collect();
-    let mut audit = Audit::new(
-        gws,
-        TierClient::new(addrs(&tier)),
-        (source_base..source_base + partitions).collect(),
-        demo_config,
-    );
+    let tiers: Vec<TierClient> = parse_groups(&tier)
+        .unwrap_or_else(|e| die(&e))
+        .into_iter()
+        .map(|g| TierClient::with_auth(g, auth.clone()))
+        .collect();
+    if gws.len() != cfg.ledger_shards as usize || tiers.len() != cfg.matching_groups as usize {
+        die("--ledgers and --tier must list every shard and every group of the config");
+    }
+    let c2 = cfg.clone();
+    let mut audit = Audit::new(gws, tiers, cfg.sources(), move |s| c2.ledger_config(s));
     let groups: Vec<Vec<SocketAddr>> = lclients
         .split(';')
-        .chain(std::iter::once(tclients.as_str()))
+        .chain(tclients.split(';'))
         .filter(|g| !g.is_empty())
-        .map(addrs)
+        .map(|g| parse_groups(g).unwrap_or_else(|e| die(&e)).remove(0))
         .collect();
 
     let start = Instant::now();

@@ -2,6 +2,7 @@
 //! `cursor` go to the leader (found by trying each address and following
 //! refusals), `read` to any replica.
 
+use crate::secure::Auth;
 use crate::server::{ExchangeClient, ForwardAck, Refusal};
 use orderer_ledger::{Event, OutMsg};
 use std::io;
@@ -11,6 +12,7 @@ use std::time::{Duration, Instant};
 
 pub struct TierClient {
     addrs: Vec<SocketAddr>,
+    auth: Auth,
     conns: Vec<Option<ExchangeClient>>,
     current: usize,
     pub budget: Duration,
@@ -19,9 +21,14 @@ pub struct TierClient {
 impl TierClient {
     /// `addrs[i]` is the exchange address of matching node `i`.
     pub fn new(addrs: Vec<SocketAddr>) -> TierClient {
+        Self::with_auth(addrs, Auth::none())
+    }
+
+    pub fn with_auth(addrs: Vec<SocketAddr>, auth: Auth) -> TierClient {
         let n = addrs.len();
         TierClient {
             addrs,
+            auth,
             conns: (0..n).map(|_| None).collect(),
             current: 0,
             budget: Duration::from_secs(60),
@@ -30,7 +37,7 @@ impl TierClient {
 
     fn conn(&mut self, i: usize) -> Option<&mut ExchangeClient> {
         if self.conns[i].is_none() {
-            self.conns[i] = ExchangeClient::connect(self.addrs[i]).ok();
+            self.conns[i] = ExchangeClient::connect_with(self.addrs[i], &self.auth).ok();
         }
         self.conns[i].as_mut()
     }
@@ -89,6 +96,12 @@ impl TierClient {
 
     pub fn cursor(&mut self, shard: u16) -> io::Result<Result<u64, Refusal>> {
         self.with(|c| c.cursor(shard))
+    }
+
+    /// The cursor from the applied state of the replica the client is talking to,
+    /// with no round trip through the log: for observers that poll fast.
+    pub fn cursor_local(&mut self, shard: u16) -> io::Result<Result<u64, Refusal>> {
+        self.with(|c| c.cursor_local(shard))
     }
 
     /// Events of stream `source` from `from`, from whichever replica answers:

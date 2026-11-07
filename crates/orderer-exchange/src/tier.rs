@@ -118,6 +118,10 @@ pub struct MatchingTierSm<C: MatchingCore> {
     intake: Arc<Mutex<TierIntake>>,
     credit: SharedCredit,
     partitions: u32,
+    /// With several matching groups: `(map, this group)`. A forwarded order or
+    /// cancel for a symbol another group owns is consumed (the intake cursor
+    /// still advances over it) but not applied.
+    owner: Option<(orderer_cluster::shard::ShardMap, u32)>,
     /// Forwarded entries that failed to decode, skipped identically everywhere.
     pub bad_forwards: u64,
 }
@@ -158,6 +162,7 @@ impl<C: MatchingCore> MatchingTierSm<C> {
                 intake,
                 credit,
                 partitions,
+                owner: None,
                 bad_forwards: 0,
             },
             view,
@@ -169,6 +174,16 @@ impl<C: MatchingCore> MatchingTierSm<C> {
     /// be called before the first entry is applied, identically on every replica.
     pub fn with_credit(self, cfg: CreditConfig) -> Self {
         *self.credit.lock().expect("credit lock") = Some(CreditState::new(&cfg, self.partitions));
+        self
+    }
+
+    /// Make this the group `group` of `groups` (symbols are assigned to groups by
+    /// `orderer_cluster::shard::ShardMap`). Every group's intake sees every
+    /// message of a ledger shard's outbox, in order, and applies only its own
+    /// symbols. Must be set identically on every replica before the first entry.
+    pub fn with_group(mut self, group: u32, groups: u32) -> Self {
+        assert!(group < groups, "group out of range");
+        self.owner = Some((orderer_cluster::shard::ShardMap::new(groups), group));
         self
     }
 
@@ -205,7 +220,13 @@ impl<C: MatchingCore> MatchingTierSm<C> {
                 if intake.accept(f.shard, f.first_idx.wrapping_add(i as u64)) != Accept::Applied {
                     continue;
                 }
+                let foreign =
+                    |symbol: u32| self.owner.is_some_and(|(map, g)| map.group_of(symbol) != g);
                 match *m {
+                    OutMsg::Submit { symbol, .. }
+                    | OutMsg::SubmitIoc { symbol, .. }
+                    | OutMsg::Cancel { symbol, .. }
+                        if foreign(symbol) => {}
                     OutMsg::Submit {
                         order,
                         symbol,

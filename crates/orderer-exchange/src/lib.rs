@@ -14,18 +14,23 @@
 
 pub mod archive;
 pub mod audit;
+pub mod cli;
+pub mod config;
 mod frame;
 pub mod gateway;
 pub mod node;
 pub mod relay;
+pub mod secure;
 pub mod server;
 pub mod store;
 pub mod tier;
 pub mod tierclient;
 pub mod wire;
 
+pub use config::{ConfigError, ExchangeConfig, SymbolCfg};
 pub use gateway::{GatewayClient, GatewayServer, LedgerState, OrderInfo};
 pub use node::{demo_config, LedgerNodeSm, LedgerView, Reply};
+pub use secure::Auth;
 pub use tierclient::TierClient;
 
 pub use archive::TierView;

@@ -2,16 +2,18 @@
 //! ledger's relays.
 //!
 //! Frame: `len u32 | crc32c u32 | kind u8 | body` (the envelope of the replica
-//! transport; `len` counts kind and body). There is **no authentication** here:
-//! run it on a private network. Adding the pre-shared-key handshake of the client
-//! port is a follow-up.
+//! transport; `len` counts kind and body, plus a MAC with a key). Connections
+//! start with the handshake of `secure.rs` (pre-shared key and configuration
+//! checksum); with no key configured the port is unauthenticated, so run it on a
+//! private network.
 //!
 //! Requests (all integers little-endian):
 //! - `FORWARD (1)`: `shard u16 | first_idx u64 | n u32 | n x message` (the body of a
 //!   tag-5 entry from its shard on). The leader proposes it and waits until it is
 //!   applied. Reply `CURSOR`.
-//! - `CURSOR (2)`: `shard u16`. A linearizable read: committed through the log
-//!   first. Reply `CURSOR`.
+//! - `CURSOR (2)`: `shard u16 [| lin u8]`. A linearizable read (committed through the
+//!   log first) unless the optional byte is 0, which reads this replica's applied
+//!   state at once. Reply `CURSOR`.
 //! - `READ (3)`: `source u32 | from u64 | max u32`. Served by any replica from its
 //!   applied state, no log round trip. Reply `EVENTS` or `TRUNCATED`.
 //!
@@ -24,18 +26,19 @@
 //! makes that safe); `ERR (7)`: text.
 
 use crate::archive::{TierView, Truncated};
+use crate::secure::{Auth, Link, Peer};
 use crate::wire::{encode_forward, get_event, put_event, Forward, Rd, MAX_BATCH, MSG_BYTES};
-use orderer::journal::crc32c;
 use orderer_cluster::{ProposeError, ReplicaHandle};
 use orderer_ledger::{Event, OutMsg};
-use std::io::{self, Read, Write};
+use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const MAX_FRAME: usize = 16 << 20;
+/// Separates this port's sessions from the gateway's.
+const LABEL: &[u8] = b"xchg";
 const Q_FORWARD: u8 = 1;
 const Q_CURSOR: u8 = 2;
 const Q_READ: u8 = 3;
@@ -46,33 +49,6 @@ const R_NOT_LEADER: u8 = 4;
 const R_BUSY: u8 = 5;
 const R_UNKNOWN: u8 = 6;
 const R_ERR: u8 = 7;
-
-fn write_frame(w: &mut impl Write, kind: u8, body: &[u8]) -> io::Result<()> {
-    let mut b = Vec::with_capacity(1 + body.len());
-    b.push(kind);
-    b.extend_from_slice(body);
-    w.write_all(&(b.len() as u32).to_le_bytes())?;
-    w.write_all(&crc32c(&b).to_le_bytes())?;
-    w.write_all(&b)?;
-    w.flush()
-}
-
-fn read_frame(r: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
-    let mut h = [0u8; 8];
-    r.read_exact(&mut h)?;
-    let len = u32::from_le_bytes(h[..4].try_into().unwrap()) as usize;
-    let crc = u32::from_le_bytes(h[4..].try_into().unwrap());
-    if len == 0 || len > MAX_FRAME {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "frame length"));
-    }
-    let mut b = vec![0u8; len];
-    r.read_exact(&mut b)?;
-    if crc32c(&b) != crc {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "frame checksum"));
-    }
-    let kind = b.remove(0);
-    Ok((kind, b))
-}
 
 pub struct ExchangeServer {
     stop: Arc<AtomicBool>,
@@ -86,6 +62,16 @@ impl ExchangeServer {
         replica: ReplicaHandle,
         view: TierView,
     ) -> io::Result<ExchangeServer> {
+        Self::start_with(addr, replica, view, Auth::none())
+    }
+
+    /// With `auth`, clients must hold the same key and config checksum.
+    pub fn start_with(
+        addr: SocketAddr,
+        replica: ReplicaHandle,
+        view: TierView,
+        auth: Auth,
+    ) -> io::Result<ExchangeServer> {
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
@@ -96,8 +82,9 @@ impl ExchangeServer {
                 match listener.accept() {
                     Ok((conn, _)) => {
                         let (h, v, stop) = (replica.clone(), view.clone(), s2.clone());
+                        let auth = auth.clone();
                         thread::spawn(move || {
-                            let _ = serve(conn, h, v, stop);
+                            let _ = serve(conn, h, v, stop, auth);
                         });
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -123,16 +110,18 @@ impl ExchangeServer {
 }
 
 fn serve(
-    mut conn: TcpStream,
+    conn: TcpStream,
     h: ReplicaHandle,
     v: TierView,
     stop: Arc<AtomicBool>,
+    auth: Auth,
 ) -> io::Result<()> {
     conn.set_nonblocking(false)?;
     conn.set_nodelay(true)?;
     conn.set_read_timeout(Some(Duration::from_millis(200)))?;
+    let mut conn = Peer::accept(conn, &auth, LABEL)?;
     while !stop.load(Ordering::Relaxed) {
-        let (kind, body) = match read_frame(&mut conn) {
+        let (kind, body) = match conn.recv() {
             Ok(x) => x,
             Err(e)
                 if matches!(
@@ -145,7 +134,7 @@ fn serve(
             Err(e) => return Err(e),
         };
         let (rk, rb) = handle(kind, &body, &h, &v);
-        write_frame(&mut conn, rk, &rb)?;
+        conn.send(rk, &rb)?;
     }
     Ok(())
 }
@@ -219,6 +208,12 @@ fn handle(kind: u8, body: &[u8], h: &ReplicaHandle, v: &TierView) -> (u8, Vec<u8
             let Ok(shard) = r.u16() else {
                 return err("short cursor");
             };
+            // An optional third byte `0` asks for the applied state of this replica
+            // with no round trip through the log (a cheap, possibly slightly stale read,
+            // for observers); anything else, or no byte, is the linearizable read.
+            if body.get(2) == Some(&0) {
+                return cursor_reply(v.cursor(shard), false);
+            }
             match h.barrier() {
                 Ok(_) => cursor_reply(v.cursor(shard), false),
                 Err(e) => refusal(e),
@@ -267,20 +262,24 @@ pub struct ForwardAck {
 }
 
 pub struct ExchangeClient {
-    conn: TcpStream,
+    conn: Link,
 }
 
 impl ExchangeClient {
     pub fn connect(addr: SocketAddr) -> io::Result<ExchangeClient> {
+        Self::connect_with(addr, &Auth::none())
+    }
+
+    /// Connect and complete the handshake: fails if the server does not hold the
+    /// same key and configuration.
+    pub fn connect_with(addr: SocketAddr, auth: &Auth) -> io::Result<ExchangeClient> {
         let conn = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
-        conn.set_nodelay(true)?;
-        conn.set_read_timeout(Some(Duration::from_secs(60)))?;
+        let conn = Link::open(conn, auth, LABEL, Duration::from_secs(60))?;
         Ok(ExchangeClient { conn })
     }
 
     fn call(&mut self, kind: u8, body: &[u8]) -> io::Result<(u8, Vec<u8>)> {
-        write_frame(&mut self.conn, kind, body)?;
-        read_frame(&mut self.conn)
+        self.conn.call(kind, body)
     }
 
     fn refused(kind: u8, b: &[u8]) -> Refusal {
@@ -329,6 +328,15 @@ impl ExchangeClient {
     /// The next outbox index matching expects from `shard` (linearizable).
     pub fn cursor(&mut self, shard: u16) -> io::Result<Result<u64, Refusal>> {
         let (k, b) = self.call(Q_CURSOR, &shard.to_le_bytes())?;
+        Ok(Self::cursor_of(k, &b).map(|a| a.cursor))
+    }
+
+    /// The same from the applied state of the replica that answers, without a
+    /// round trip through the log: cheap and possibly a little stale, for observers.
+    pub fn cursor_local(&mut self, shard: u16) -> io::Result<Result<u64, Refusal>> {
+        let mut body = shard.to_le_bytes().to_vec();
+        body.push(0);
+        let (k, b) = self.call(Q_CURSOR, &body)?;
         Ok(Self::cursor_of(k, &b).map(|a| a.cursor))
     }
 

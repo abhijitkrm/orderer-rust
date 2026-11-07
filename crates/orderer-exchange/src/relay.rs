@@ -6,7 +6,7 @@
 use crate::gateway::GatewayClient;
 use crate::node::Reply;
 use crate::tierclient::TierClient;
-use orderer_ledger::{settle_cmds, Cmd, Forwarder};
+use orderer_ledger::{settle_cmds, Cmd};
 use std::io;
 
 /// Outcome of one relay step, for logging and for the caller's idle sleep.
@@ -18,13 +18,19 @@ pub struct Step {
     pub gaps: usize,
 }
 
-/// Delivers one ledger shard's outbox to the matching group.
+/// Delivers one ledger shard's outbox to every matching group.
+///
+/// A ledger shard has one outbox, in order. With several matching groups every
+/// group's intake sees every message, in order, and applies only the symbols it
+/// owns (`MatchingTierSm::with_group`), so a group's cursor counts the whole outbox.
+/// The ledger may trim only what **all** groups have accepted: the acknowledged
+/// index is the minimum of the groups' cursors, which is why one relay serves all
+/// groups of a shard. With one group this is the plain relay.
 pub struct ForwarderRelay {
     pub shard: u16,
-    fwd: Forwarder,
-    /// The matching group's cursor for this shard as of the last reply; `None`
-    /// after a start or an error, which makes the next step ask for it.
-    known: Option<u64>,
+    /// Each group's cursor for this shard as of its last reply; `None` after a
+    /// start or an error, which makes the next step ask for it.
+    known: Vec<Option<u64>>,
     pub batch: u32,
     /// Fault injection (0 = off): every `chaos`-th successful forward is followed by
     /// a duplicate of the same batch and an overlapping one, as a network that
@@ -34,79 +40,106 @@ pub struct ForwarderRelay {
 }
 
 impl ForwarderRelay {
-    pub fn new(shard: u16) -> ForwarderRelay {
+    pub fn new(shard: u16, groups: usize) -> ForwarderRelay {
         ForwarderRelay {
             shard,
-            fwd: Forwarder::new(shard),
-            known: None,
+            known: vec![None; groups],
             batch: 256,
             chaos: 0,
             sends: 0,
         }
     }
 
-    pub fn step(&mut self, ledger: &mut GatewayClient, tier: &mut TierClient) -> io::Result<Step> {
-        let cursor = match self.known {
-            Some(c) => c,
-            None => match tier.cursor(self.shard)? {
-                Ok(c) => {
-                    self.known = Some(c);
-                    c
+    /// `tiers[g]` is the client of matching group `g`.
+    pub fn step(
+        &mut self,
+        ledger: &mut GatewayClient,
+        tiers: &mut [TierClient],
+    ) -> io::Result<Step> {
+        assert_eq!(tiers.len(), self.known.len(), "one client per group");
+        for (g, t) in tiers.iter_mut().enumerate() {
+            if self.known[g].is_none() {
+                match t.cursor(self.shard)? {
+                    Ok(c) => self.known[g] = Some(c),
+                    Err(r) => {
+                        return Err(io::Error::other(format!(
+                            "group {g}: cursor refused: {r:?}"
+                        )))
+                    }
                 }
-                Err(r) => return Err(io::Error::other(format!("cursor refused: {r:?}"))),
-            },
-        };
-        let (base, _next, first, msgs) = ledger.outbox(false, cursor, self.batch)?;
-        if base > cursor {
-            // The ledger trimmed past what matching has accepted: it must never happen.
-            self.known = None;
+            }
+        }
+        let low = self
+            .known
+            .iter()
+            .map(|k| k.expect("known"))
+            .min()
+            .unwrap_or(0);
+        let (base, _next, first, msgs) = ledger.outbox(false, low, self.batch)?;
+        if base > low {
+            // The ledger trimmed past what a group has accepted: it must never happen.
+            self.known.iter_mut().for_each(|k| *k = None);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "shard {}: ledger outbox base {base} is ahead of the matching cursor {cursor}",
+                    "shard {}: ledger outbox base {base} is ahead of a matching cursor {low}",
                     self.shard
                 ),
             ));
         }
-        if msgs.is_empty() {
-            // Nothing to send. Re-issue the trim if the ledger has not seen it.
-            if base < cursor {
-                ledger.raw(&Cmd::OutboxAck { upto: cursor })?;
+        let mut moved = 0;
+        let mut gaps = 0;
+        for (g, tier) in tiers.iter_mut().enumerate() {
+            let have = self.known[g].expect("known");
+            let skip = have.saturating_sub(first) as usize;
+            if skip >= msgs.len() {
+                continue; // this group is already past the window
             }
-            return Ok(Step::default());
-        }
-        let ack = match tier.forward(self.shard, first, &msgs)? {
-            Ok(a) => a,
-            Err(r) => {
-                self.known = None;
-                return Err(io::Error::other(format!("forward refused: {r:?}")));
+            let (idx, part) = (first + skip as u64, &msgs[skip..]);
+            let ack = match tier.forward(self.shard, idx, part)? {
+                Ok(a) => a,
+                Err(r) => {
+                    self.known[g] = None;
+                    return Err(io::Error::other(format!(
+                        "group {g}: forward refused: {r:?}"
+                    )));
+                }
+            };
+            self.sends += 1;
+            if self.chaos > 0 && self.sends % self.chaos == 0 {
+                let _ = tier.forward(self.shard, idx, part);
+                let k = part.len() / 2;
+                let _ = tier.forward(self.shard, idx + k as u64, &part[k..]);
             }
-        };
-        self.sends += 1;
-        if self.chaos > 0 && self.sends % self.chaos == 0 {
-            let _ = tier.forward(self.shard, first, &msgs);
-            let k = msgs.len() / 2;
-            let _ = tier.forward(self.shard, first + k as u64, &msgs[k..]);
+            self.known[g] = if ack.gap { None } else { Some(ack.cursor) };
+            moved += part.len();
+            gaps += ack.gap as usize;
         }
-        self.known = if ack.gap { None } else { Some(ack.cursor) };
-        if let Some(cmd) = self.fwd.on_reply(ack.cursor, ack.gap) {
-            ledger.raw(&cmd)?;
-        } else if base < ack.cursor {
-            ledger.raw(&Cmd::OutboxAck { upto: ack.cursor })?;
+        // Trim what every group has accepted, and only that.
+        if self.known.iter().all(|k| k.is_some()) {
+            let upto = self
+                .known
+                .iter()
+                .map(|k| k.expect("known"))
+                .min()
+                .unwrap_or(0);
+            if upto > base {
+                ledger.raw(&Cmd::OutboxAck { upto })?;
+            }
         }
-        Ok(Step {
-            moved: msgs.len(),
-            gaps: ack.gap as usize,
-        })
+        Ok(Step { moved, gaps })
     }
 }
 
-/// Settles one ledger shard from every matching stream.
+/// Settles every ledger shard from every matching stream, reading each stream
+/// once. Memory-less: its read positions are an optimisation, rebuilt from the
+/// ledgers' marks whenever anything goes wrong.
 pub struct SettlerRelay {
-    pub shard: u16,
-    pub sources: Vec<u32>,
-    /// Last stream index read, per source: where to continue; rebuilt from the
-    /// ledger's marks when zero.
+    /// Ledger shard of `ledgers[k]` in `step`.
+    pub shards: Vec<u16>,
+    /// `(stream id, matching group)`.
+    pub sources: Vec<(u32, usize)>,
+    /// Per stream: everything up to here has been sent to every shard and accepted.
     scan: Vec<u64>,
     pub batch: u32,
     /// Fault injection (0 = off): every `chaos`-th batch of two or more settles is
@@ -117,10 +150,10 @@ pub struct SettlerRelay {
 }
 
 impl SettlerRelay {
-    pub fn new(shard: u16, sources: Vec<u32>) -> SettlerRelay {
+    pub fn new(shards: Vec<u16>, sources: Vec<(u32, usize)>) -> SettlerRelay {
         let n = sources.len();
         SettlerRelay {
-            shard,
+            shards,
             sources,
             scan: vec![0; n],
             batch: 256,
@@ -129,14 +162,24 @@ impl SettlerRelay {
         }
     }
 
-    pub fn step(&mut self, ledger: &mut GatewayClient, tier: &mut TierClient) -> io::Result<Step> {
-        let st = ledger.state(false, &self.sources)?;
+    pub fn step(
+        &mut self,
+        ledgers: &mut [GatewayClient],
+        tiers: &mut [TierClient],
+    ) -> io::Result<Step> {
+        assert_eq!(ledgers.len(), self.shards.len(), "one client per shard");
+        let ids: Vec<u32> = self.sources.iter().map(|s| s.0).collect();
         let mut step = Step::default();
-        for k in 0..self.sources.len() {
-            let source = self.sources[k];
-            let hw = st.marks[k];
-            let from = self.scan[k].max(hw) + 1;
-            let (evs, _end) = match tier.read(source, from, self.batch)? {
+        let mut first_err: Option<io::Error> = None;
+        // marks[k][j]: shard k's mark for stream j
+        let mut marks = Vec::with_capacity(ledgers.len());
+        for l in ledgers.iter_mut() {
+            marks.push(l.state(false, &ids)?.marks);
+        }
+        for (j, &(source, group)) in self.sources.iter().enumerate() {
+            let low = marks.iter().map(|m| m[j]).min().unwrap_or(0);
+            let from = self.scan[j].max(low) + 1;
+            let (evs, _end) = match tiers[group].read(source, from, self.batch)? {
                 Ok(x) => x,
                 Err(r) => {
                     return Err(io::Error::other(format!(
@@ -147,35 +190,54 @@ impl SettlerRelay {
             let Some(last) = evs.last().map(|e| e.0) else {
                 continue;
             };
-            let mut ok = true;
-            let cmds = settle_cmds(source, self.shard, hw, evs, self.batch as usize);
-            self.batches += 1;
-            if self.chaos > 0 && self.batches % self.chaos == 0 && cmds.len() >= 2 {
-                let _ = ledger.raw(cmds.last().expect("two or more"));
-            }
-            for cmd in cmds {
-                match ledger.raw(&cmd)? {
-                    Reply::Other(_) => step.moved += 1, // Settled or a Duplicate
-                    Reply::Rejected(r) if r == "Gap" => {
-                        step.gaps += 1;
-                        ok = false;
-                        break;
+            let mut all_ok = true;
+            for (k, ledger) in ledgers.iter_mut().enumerate() {
+                let shard = self.shards[k];
+                let cmds =
+                    settle_cmds(source, shard, marks[k][j], evs.clone(), self.batch as usize);
+                if cmds.is_empty() {
+                    continue;
+                }
+                self.batches += 1;
+                if self.chaos > 0 && self.batches % self.chaos == 0 && cmds.len() >= 2 {
+                    let _ = ledger.raw(cmds.last().expect("two or more"));
+                }
+                // One log entry for the whole chain, applied in order: a settle that
+                // is refused as a gap makes the rest of the chain gaps too.
+                match ledger.raw_batch(&cmds) {
+                    Ok(replies) => {
+                        for (cmd, reply) in cmds.iter().zip(replies) {
+                            match reply {
+                                Reply::Other(_) => step.moved += 1, // Settled or a Duplicate
+                                Reply::Rejected(r) if r == "Gap" => {
+                                    step.gaps += 1;
+                                    all_ok = false;
+                                    break;
+                                }
+                                other => {
+                                    eprintln!(
+                                        "settler shard {shard} source {source}: {other:?} for {cmd:?}"
+                                    );
+                                    all_ok = false;
+                                    break;
+                                }
+                            }
+                        }
                     }
-                    other => {
-                        eprintln!(
-                            "settler shard {} source {source}: {other:?} for {cmd:?}",
-                            self.shard
-                        );
-                        ok = false;
-                        break;
+                    Err(e) => {
+                        all_ok = false;
+                        first_err.get_or_insert(e);
                     }
                 }
             }
-            // Past the batch only if every settle was accepted; otherwise start over
-            // from the ledger's mark.
-            self.scan[k] = if ok { last } else { 0 };
+            // Past the batch only if every shard accepted everything; otherwise start
+            // over from the ledgers' marks.
+            self.scan[j] = if all_ok { last } else { 0 };
         }
-        Ok(step)
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(step),
+        }
     }
 }
 

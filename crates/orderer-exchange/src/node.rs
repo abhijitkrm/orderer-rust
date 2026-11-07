@@ -16,6 +16,10 @@
 //!   `OutboxAck` and `Clock` by monotonicity, `Sweep` by the `cancelling` flag.
 //!   Session protection is for `Reserve`, `Cancel`, `Deposit`, `Withdraw`,
 //!   `Finalize`, which are not.
+//! - **batch** `0xA2 | n u32 | n x (len u32 | command)`: n raw commands applied in
+//!   order in one entry (one log round trip instead of n), for the settler. The
+//!   reply is `n u32 | n x (len u32 | reply)`. Chained settles in a batch depend on
+//!   each other in order, which the order of application preserves.
 //! - empty: a read barrier, ignored.
 //!
 //! The reply of every applied entry is kept in a bounded book keyed by log
@@ -30,6 +34,10 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 pub const TAG_SESSION: u8 = 0xA1;
+/// A batch of bare commands in one entry: `0xA2 | n u32 | n x (len u32 | command)`.
+pub const TAG_BATCH: u8 = 0xA2;
+/// At most this many commands in a batch entry.
+pub const MAX_BATCH: usize = 4096;
 pub const MAX_SESSIONS: usize = 1 << 16;
 pub const BOOK: usize = 1 << 16;
 
@@ -88,6 +96,19 @@ pub enum Reply {
 }
 
 impl Reply {
+    /// The replies of a batch entry (`n u32 | n x (len u32 | reply)`).
+    pub fn decode_batch(b: &[u8]) -> Option<Vec<Reply>> {
+        let n = u32::from_le_bytes(b.get(..4)?.try_into().ok()?) as usize;
+        let mut at = 4;
+        let mut out = Vec::with_capacity(n.min(MAX_BATCH));
+        for _ in 0..n {
+            let len = u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?) as usize;
+            out.push(Reply::decode(b.get(at + 4..at + 4 + len)?)?);
+            at += 4 + len;
+        }
+        (at == b.len()).then_some(out)
+    }
+
     pub fn decode(b: &[u8]) -> Option<Reply> {
         if b.len() < 17 {
             return None;
@@ -194,8 +215,49 @@ impl Inner {
         }
     }
 
+    /// Apply a batch body; the reply is the batch reply, or a single undecodable
+    /// reply if the framing is broken (nothing is applied then).
+    fn apply_batch(&mut self, body: &[u8]) -> Vec<u8> {
+        let mut cmds = Vec::new();
+        let framed = (|| {
+            let n = u32::from_le_bytes(body.get(..4)?.try_into().ok()?) as usize;
+            if n > MAX_BATCH {
+                return None;
+            }
+            let mut at = 4;
+            for _ in 0..n {
+                let len = u32::from_le_bytes(body.get(at..at + 4)?.try_into().ok()?) as usize;
+                cmds.push(body.get(at + 4..at + 4 + len)?);
+                at += 4 + len;
+            }
+            (at == body.len()).then_some(())
+        })();
+        if framed.is_none() {
+            self.ledger.note_undecodable();
+            return plain_reply(RK_UNDECODABLE);
+        }
+        let mut out = (cmds.len() as u32).to_le_bytes().to_vec();
+        for c in cmds {
+            let r = match decode_cmd(c) {
+                Ok(c) => reply_of(&self.ledger.apply(&c)),
+                Err(_) => {
+                    self.ledger.note_undecodable();
+                    plain_reply(RK_UNDECODABLE)
+                }
+            };
+            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
+            out.extend_from_slice(&r);
+        }
+        out
+    }
+
     fn apply_entry(&mut self, index: Index, data: &[u8]) {
         if data.is_empty() {
+            return;
+        }
+        if data[0] == TAG_BATCH {
+            let reply = self.apply_batch(&data[1..]);
+            self.record(index, reply);
             return;
         }
         if data[0] != TAG_SESSION {

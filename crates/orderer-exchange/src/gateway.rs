@@ -2,7 +2,9 @@
 //! replica. Commands go through the replicated log and are answered with the
 //! outcome once applied; reads come from the applied state.
 //!
-//! Frame: see `frame.rs`. No authentication: run it on a private network.
+//! Frame: see `frame.rs`. Connections start with the handshake of `secure.rs`
+//! (pre-shared key and configuration checksum); with no key configured the port
+//! is unauthenticated, so run it on a private network.
 //!
 //! Requests (integers little-endian):
 //! - `CMD (1)`: `client u64 | seq u64 | ledger command` -> reply `OUTCOME`. Leader
@@ -10,6 +12,9 @@
 //!   safe and returns the original reply (see `node.rs`).
 //! - `RAW (2)`: a bare ledger command, for the relays' idempotent commands
 //!   (`Settle`, `OutboxAck`, `Clock`, `Sweep`). Leader only.
+//! - `BATCH (8)`: `n u32 | n x (len u32 | ledger command)`: the same bare commands in
+//!   one log entry, applied in order -> reply `OUTCOME` carrying `n u32 | n x (len u32 |
+//!   reply)`. Leader only.
 //! - `STATE (3)`: `lin u8 | n u32 | n x source u32` -> `STATE`:
 //!   `applied | clock | outbox_base | outbox_next | open_orders | anomalies` (u64
 //!   each) then `n x mark u64` (0 = none).
@@ -30,8 +35,8 @@
 //! `BALANCE (5)`; `ORDER (6)`; `NOT_LEADER (7)`: `hint i64`; `BUSY (8)`;
 //! `UNKNOWN (9)` (the proposal may have committed: retry); `ERR (10)`: text.
 
-use crate::frame::{read_frame, write_frame};
-use crate::node::{LedgerView, Reply, TAG_SESSION};
+use crate::node::{LedgerView, Reply, MAX_BATCH, TAG_BATCH, TAG_SESSION};
+use crate::secure::{Auth, Link, Peer};
 use crate::wire::{decode_forward, encode_forward, Forward, Rd};
 use orderer_cluster::{ProposeError, ReplicaHandle};
 use orderer_ledger::{decode_cmd, encode_cmd, Cmd, OutMsg, Side};
@@ -42,6 +47,8 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+/// Separates this port's sessions from the exchange port's.
+const LABEL: &[u8] = b"gway";
 const Q_CMD: u8 = 1;
 const Q_RAW: u8 = 2;
 const Q_STATE: u8 = 3;
@@ -49,6 +56,7 @@ const Q_OUTBOX: u8 = 4;
 const Q_SNAPSHOT: u8 = 5;
 const Q_BALANCE: u8 = 6;
 const Q_ORDER: u8 = 7;
+const Q_BATCH: u8 = 8;
 const R_OUTCOME: u8 = 1;
 const R_STATE: u8 = 2;
 const R_OUTBOX: u8 = 3;
@@ -72,6 +80,16 @@ impl GatewayServer {
         replica: ReplicaHandle,
         view: LedgerView,
     ) -> io::Result<GatewayServer> {
+        Self::start_with(addr, replica, view, Auth::none())
+    }
+
+    /// With `auth`, clients must hold the same key and config checksum.
+    pub fn start_with(
+        addr: SocketAddr,
+        replica: ReplicaHandle,
+        view: LedgerView,
+        auth: Auth,
+    ) -> io::Result<GatewayServer> {
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
@@ -82,8 +100,9 @@ impl GatewayServer {
                 match listener.accept() {
                     Ok((conn, _)) => {
                         let (h, v, stop) = (replica.clone(), view.clone(), s2.clone());
+                        let auth = auth.clone();
                         thread::spawn(move || {
-                            let _ = serve(conn, h, v, stop);
+                            let _ = serve(conn, h, v, stop, auth);
                         });
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -109,16 +128,18 @@ impl GatewayServer {
 }
 
 fn serve(
-    mut conn: TcpStream,
+    conn: TcpStream,
     h: ReplicaHandle,
     v: LedgerView,
     stop: Arc<AtomicBool>,
+    auth: Auth,
 ) -> io::Result<()> {
     conn.set_nonblocking(false)?;
     conn.set_nodelay(true)?;
     conn.set_read_timeout(Some(Duration::from_millis(200)))?;
+    let mut conn = Peer::accept(conn, &auth, LABEL)?;
     while !stop.load(Ordering::Relaxed) {
-        let (kind, body) = match read_frame(&mut conn) {
+        let (kind, body) = match conn.recv() {
             Ok(x) => x,
             Err(e)
                 if matches!(
@@ -131,7 +152,7 @@ fn serve(
             Err(e) => return Err(e),
         };
         let (rk, rb) = handle(kind, &body, &h, &v);
-        write_frame(&mut conn, rk, &rb)?;
+        conn.send(rk, &rb)?;
     }
     Ok(())
 }
@@ -210,6 +231,28 @@ fn handle(kind: u8, body: &[u8], h: &ReplicaHandle, v: &LedgerView) -> (u8, Vec<
                 return err("bad ledger command");
             }
             propose_for_reply(h, v, body.to_vec())
+        }
+        Q_BATCH => {
+            // validate the framing here so a bad request is refused, not proposed
+            let ok = (|| {
+                let n = u32::from_le_bytes(body.get(..4)?.try_into().ok()?) as usize;
+                if n == 0 || n > MAX_BATCH {
+                    return None;
+                }
+                let mut at = 4;
+                for _ in 0..n {
+                    let len = u32::from_le_bytes(body.get(at..at + 4)?.try_into().ok()?) as usize;
+                    decode_cmd(body.get(at + 4..at + 4 + len)?).ok()?;
+                    at += 4 + len;
+                }
+                (at == body.len()).then_some(())
+            })();
+            if ok.is_none() {
+                return err("bad batch");
+            }
+            let mut entry = vec![TAG_BATCH];
+            entry.extend_from_slice(body);
+            propose_for_reply(h, v, entry)
         }
         Q_STATE => {
             let (Ok(lin), Ok(n)) = (r.u8(), r.u32()) else {
@@ -346,7 +389,8 @@ pub struct OrderInfo {
 /// retries until it has a definite answer or `budget` is spent.
 pub struct GatewayClient {
     addrs: Vec<SocketAddr>,
-    conns: Vec<Option<TcpStream>>,
+    auth: Auth,
+    conns: Vec<Option<Link>>,
     current: usize,
     pub budget: Duration,
 }
@@ -357,9 +401,15 @@ fn bad(m: &'static str) -> io::Error {
 
 impl GatewayClient {
     pub fn new(addrs: Vec<SocketAddr>) -> GatewayClient {
+        Self::with_auth(addrs, Auth::none())
+    }
+
+    /// A client that authenticates with `auth` on every connection.
+    pub fn with_auth(addrs: Vec<SocketAddr>, auth: Auth) -> GatewayClient {
         let n = addrs.len();
         GatewayClient {
             addrs,
+            auth,
             conns: (0..n).map(|_| None).collect(),
             current: 0,
             budget: Duration::from_secs(60),
@@ -383,11 +433,7 @@ impl GatewayClient {
             let i = self.current % self.addrs.len();
             if self.conns[i].is_none() {
                 self.conns[i] = TcpStream::connect_timeout(&self.addrs[i], Duration::from_secs(2))
-                    .and_then(|c| {
-                        c.set_nodelay(true)?;
-                        c.set_read_timeout(Some(Duration::from_secs(40)))?;
-                        Ok(c)
-                    })
+                    .and_then(|c| Link::open(c, &self.auth, LABEL, Duration::from_secs(40)))
                     .ok();
             }
             let Some(conn) = self.conns[i].as_mut() else {
@@ -395,7 +441,7 @@ impl GatewayClient {
                 thread::sleep(Duration::from_millis(20));
                 continue;
             };
-            let res = write_frame(conn, kind, body).and_then(|_| read_frame(conn));
+            let res = conn.call(kind, body);
             match res {
                 Ok((k, b)) if want(k) => return Ok((k, b)),
                 Ok((R_NOT_LEADER, b)) => {
@@ -447,6 +493,24 @@ impl GatewayClient {
     /// An idempotent relay command (`Settle`, `OutboxAck`, `Clock`, `Sweep`).
     pub fn raw(&mut self, cmd: &Cmd) -> io::Result<Reply> {
         self.outcome(Q_RAW, &encode_cmd(cmd))
+    }
+
+    /// Several idempotent relay commands in one log entry, applied in order; one
+    /// reply per command. At most `node::MAX_BATCH` commands.
+    pub fn raw_batch(&mut self, cmds: &[Cmd]) -> io::Result<Vec<Reply>> {
+        assert!(!cmds.is_empty() && cmds.len() <= MAX_BATCH, "batch size");
+        let mut body = (cmds.len() as u32).to_le_bytes().to_vec();
+        for c in cmds {
+            let e = encode_cmd(c);
+            body.extend_from_slice(&(e.len() as u32).to_le_bytes());
+            body.extend_from_slice(&e);
+        }
+        let (_, b) = self.call(Q_BATCH, &body, |k| k == R_OUTCOME)?;
+        let r = Reply::decode_batch(&b).ok_or_else(|| bad("batch reply"))?;
+        if r.len() != cmds.len() {
+            return Err(bad("batch reply length"));
+        }
+        Ok(r)
     }
 
     pub fn state(&mut self, lin: bool, sources: &[u32]) -> io::Result<LedgerState> {

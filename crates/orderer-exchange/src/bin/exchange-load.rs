@@ -1,7 +1,7 @@
 //! exchange-load: a load generator for the exchange, through the ledger gateways.
 //!
-//!   exchange-load deposit --ledgers A,B,C;D,E,F --accounts N --acked FILE
-//!   exchange-load run     --ledgers ... --accounts N --secs S --threads T --acked FILE [--seed X]
+//!   exchange-load deposit --config FILE --ledgers A,B,C;D,E,F --accounts N --acked FILE
+//!   exchange-load run     --config FILE --ledgers ... --accounts N --secs S --threads T --acked FILE [--seed X]
 //!   exchange-load drain   --ledgers ... --acked FILE [--timeout SECS]
 //!
 //! Account `a` lives on shard `a % shards`. `deposit` funds every account
@@ -12,13 +12,14 @@
 //! withdrawal that was paid out). `drain` cancels every acknowledged order that is
 //! still open and waits until none is.
 
-use orderer_exchange::{GatewayClient, Reply};
+use orderer_exchange::cli::{parse_groups, Setup};
+use orderer_exchange::{Auth, GatewayClient, Reply};
 use orderer_ledger::{Cmd, Side};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::process::exit;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn die(msg: &str) -> ! {
@@ -26,17 +27,21 @@ fn die(msg: &str) -> ! {
     exit(2)
 }
 
-fn groups(s: &str) -> Vec<Vec<SocketAddr>> {
-    s.split(';')
-        .map(|g| {
-            g.split(',')
-                .map(|a| {
-                    a.parse()
-                        .unwrap_or_else(|_| die(&format!("bad address {a}")))
-                })
-                .collect()
-        })
-        .collect()
+/// The configuration this run uses: symbols to trade, assets to fund, credentials.
+struct Ctx {
+    symbols: Vec<u32>,
+    assets: Vec<u32>,
+    auth: Auth,
+}
+
+static CTX: OnceLock<Ctx> = OnceLock::new();
+
+fn ctx() -> &'static Ctx {
+    CTX.get().expect("context is set in main")
+}
+
+fn gateway(addrs: Vec<SocketAddr>) -> GatewayClient {
+    GatewayClient::with_auth(addrs, ctx().auth.clone())
 }
 
 struct Rng(u64);
@@ -59,18 +64,18 @@ fn note(out: &Out, line: String) {
     let _ = writeln!(f, "{line}");
 }
 
-const FUND: [(u32, u128); 3] = [(1, 10_000_000), (2, 10_000_000), (3, 1_000_000)];
+/// What every account is funded with: 10M of each asset.
+fn fund() -> Vec<(u32, u128)> {
+    ctx().assets.iter().map(|&a| (a, 10_000_000)).collect()
+}
 
 fn deposit_all(addrs: &[Vec<SocketAddr>], accounts: u64, out: &Out, client: u64) {
     let n = addrs.len() as u64;
-    let mut gws: Vec<GatewayClient> = addrs
-        .iter()
-        .map(|a| GatewayClient::new(a.clone()))
-        .collect();
+    let mut gws: Vec<GatewayClient> = addrs.iter().map(|a| gateway(a.clone())).collect();
     let mut seq = vec![0u64; addrs.len()];
     for account in 1..=accounts {
         let s = (account % n) as usize;
-        for (asset, amount) in FUND {
+        for (asset, amount) in fund() {
             seq[s] += 1;
             let ext = 1_000_000 + account * 10 + asset as u64;
             let r = gws[s].cmd(
@@ -117,7 +122,7 @@ fn worker(
     out: Out,
 ) -> Counts {
     let n = addrs.len() as u64;
-    let mut gws: Vec<GatewayClient> = addrs.into_iter().map(GatewayClient::new).collect();
+    let mut gws: Vec<GatewayClient> = addrs.into_iter().map(gateway).collect();
     let mut seq = vec![0u64; gws.len()];
     let mut rng = Rng(seed | 1);
     let mut open: Vec<(u64, u64)> = Vec::new(); // (account, order)
@@ -130,7 +135,7 @@ fn worker(
         let cid = client + s as u64;
         match rng.below(100) {
             0..=59 => {
-                let symbol = if rng.below(2) == 0 { 10 } else { 11 };
+                let symbol = ctx().symbols[rng.below(ctx().symbols.len() as u64) as usize];
                 let side = if rng.below(2) == 0 {
                     Side::Buy
                 } else {
@@ -178,7 +183,7 @@ fn worker(
                 }
             }
             85..=92 => {
-                let (asset, _) = FUND[rng.below(3) as usize];
+                let asset = ctx().assets[rng.below(ctx().assets.len() as u64) as usize];
                 let amount = 1 + rng.below(500) as u128;
                 ext += 1;
                 seq[s] += 1;
@@ -217,7 +222,7 @@ fn worker(
                 }
             }
             _ => {
-                let (asset, _) = FUND[rng.below(3) as usize];
+                let asset = ctx().assets[rng.below(ctx().assets.len() as u64) as usize];
                 let amount = 1 + rng.below(5_000) as u128;
                 ext += 1;
                 seq[s] += 1;
@@ -245,7 +250,7 @@ fn worker(
 
 fn drain(addrs: Vec<Vec<SocketAddr>>, orders: Vec<u64>, timeout: u64, client: u64) {
     let n = addrs.len();
-    let mut gws: Vec<GatewayClient> = addrs.into_iter().map(GatewayClient::new).collect();
+    let mut gws: Vec<GatewayClient> = addrs.into_iter().map(gateway).collect();
     let mut seq = vec![0u64; n];
     let end = Instant::now() + Duration::from_secs(timeout);
     loop {
@@ -290,6 +295,7 @@ fn main() {
         .unwrap_or_else(|| die("mode: deposit|run|drain"));
     let (mut ledgers, mut accounts, mut secs, mut threads, mut acked) =
         (String::new(), 50u64, 20u64, 4u64, String::new());
+    let mut config = String::new();
     let (mut seed, mut timeout) = (0x9E37_79B9_7F4A_7C15u64, 120u64);
     while let Some(a) = args.next() {
         let mut v = |n: &str| {
@@ -297,6 +303,7 @@ fn main() {
                 .unwrap_or_else(|| die(&format!("{n} needs a value")))
         };
         match a.as_str() {
+            "--config" => config = v("--config"),
             "--ledgers" => ledgers = v("--ledgers"),
             "--accounts" => {
                 accounts = v("--accounts")
@@ -311,10 +318,27 @@ fn main() {
             other => die(&format!("unknown argument {other}")),
         }
     }
-    if ledgers.is_empty() || acked.is_empty() {
-        die("--ledgers and --acked are required");
+    if ledgers.is_empty() || acked.is_empty() || config.is_empty() {
+        die("--config, --ledgers and --acked are required");
     }
-    let addrs = groups(&ledgers);
+    let setup = Setup::load(&config).unwrap_or_else(|e| die(&e));
+    let mut assets: Vec<u32> = setup
+        .cfg
+        .symbols
+        .iter()
+        .flat_map(|s| [s.base, s.quote])
+        .collect();
+    assets.sort_unstable();
+    assets.dedup();
+    let _ = CTX.set(Ctx {
+        symbols: setup.cfg.symbols.iter().map(|s| s.id).collect(),
+        assets,
+        auth: setup.auth.clone(),
+    });
+    let addrs = parse_groups(&ledgers).unwrap_or_else(|e| die(&e));
+    if addrs.len() != setup.cfg.ledger_shards as usize {
+        die("--ledgers must list every shard of the config");
+    }
     // Session ids must be unique per run: a restarted tool must not reuse the sequence numbers.
     let base = (SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -1,20 +1,22 @@
 //! exchange-relay: the memory-less relays between ledger shards and the
-//! matching group. Kill and restart any of them at any time.
+//! matching groups. Kill and restart any of them at any time.
 //!
-//!   exchange-relay forwarder --shard S --ledger A,B,C --tier A,B,C
-//!   exchange-relay settler   --shard S --ledger A,B,C --tier A,B,C
-//!                            --source-base B --partitions P
+//!   exchange-relay forwarder --config FILE --shard S --ledger A,B,C --tier "A,B,C;D,E,F"
+//!   exchange-relay settler   --config FILE --ledgers "A,B,C;D,E,F" --tier "A,B,C;D,E,F"
 //!   (forwarder and settler also take --chaos N: fault injection, see relay.rs)
-//!   exchange-relay tick      --ledgers A,B,C;D,E,F [--interval-ms 200]
+//!   exchange-relay tick      --config FILE --ledgers "A,B,C;D,E,F" [--interval-ms 200]
 //!                            [--sweep-every-ms 2000] [--max-age-ms 5000] [--retry-ms 5000]
 //!
-//! `--ledger` lists a shard's gateway addresses and `--tier` the matching nodes'
-//! exchange addresses, each in node-id order (a leader hint is a node id).
-//! `tick` takes one such list per shard, separated by `;`.
+//! `--ledger` lists one shard's gateway addresses and `--ledgers` one list per
+//! shard (separated by `;`, in shard order); `--tier` lists the matching nodes'
+//! exchange addresses, one list per group (separated by `;`, in group order), each in
+//! node-id order (a leader hint is a node id). The forwarder serves one shard and
+//! every group; the settler serves every shard and reads every stream once.
+//! The key, if any, is read from `ORDERER_KEY`.
 
+use orderer_exchange::cli::{parse_addrs, parse_groups, Setup};
 use orderer_exchange::relay::{ForwarderRelay, SettlerRelay, TickRelay};
 use orderer_exchange::{GatewayClient, TierClient};
-use std::net::SocketAddr;
 use std::process::exit;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -23,23 +25,18 @@ fn die(msg: &str) -> ! {
     exit(2)
 }
 
-fn addrs(s: &str) -> Vec<SocketAddr> {
-    s.split(',')
-        .map(|a| {
-            a.parse()
-                .unwrap_or_else(|_| die(&format!("bad address {a}")))
-        })
-        .collect()
-}
-
 fn main() {
     let mut args = std::env::args().skip(1);
     let mode = args
         .next()
         .unwrap_or_else(|| die("mode: forwarder|settler|tick"));
-    let (mut shard, mut ledger, mut tier, mut ledgers) =
-        (0u16, String::new(), String::new(), String::new());
-    let (mut source_base, mut partitions) = (0u32, 4u32);
+    let (mut config, mut shard, mut ledger, mut tier, mut ledgers) = (
+        String::new(),
+        0u16,
+        String::new(),
+        String::new(),
+        String::new(),
+    );
     let (mut interval, mut sweep_every, mut max_age, mut retry) =
         (200u64, 2000u64, 5000u64, 5000u64);
     let mut chaos = 0u32;
@@ -49,20 +46,11 @@ fn main() {
                 .unwrap_or_else(|| die(&format!("{n} needs a value")))
         };
         match a.as_str() {
+            "--config" => config = v("--config"),
             "--shard" => shard = v("--shard").parse().unwrap_or_else(|_| die("--shard")),
             "--ledger" => ledger = v("--ledger"),
             "--tier" => tier = v("--tier"),
             "--ledgers" => ledgers = v("--ledgers"),
-            "--source-base" => {
-                source_base = v("--source-base")
-                    .parse()
-                    .unwrap_or_else(|_| die("--source-base"))
-            }
-            "--partitions" => {
-                partitions = v("--partitions")
-                    .parse()
-                    .unwrap_or_else(|_| die("--partitions"))
-            }
             "--interval-ms" => {
                 interval = v("--interval-ms")
                     .parse()
@@ -87,15 +75,52 @@ fn main() {
             other => die(&format!("unknown argument {other}")),
         }
     }
+    if config.is_empty() {
+        die("--config is required");
+    }
+    let setup = Setup::load(&config).unwrap_or_else(|e| die(&e));
+    let (cfg, auth) = (&setup.cfg, &setup.auth);
+    let tier_clients = |tier: &str| -> Vec<TierClient> {
+        let g = parse_groups(tier).unwrap_or_else(|e| die(&e));
+        if g.len() != cfg.matching_groups as usize {
+            die(&format!(
+                "--tier has {} groups but the config has {}",
+                g.len(),
+                cfg.matching_groups
+            ));
+        }
+        g.into_iter()
+            .map(|a| TierClient::with_auth(a, auth.clone()))
+            .collect()
+    };
+    let ledger_clients = |ledgers: &str| -> Vec<GatewayClient> {
+        let g = parse_groups(ledgers).unwrap_or_else(|e| die(&e));
+        if g.len() != cfg.ledger_shards as usize {
+            die(&format!(
+                "--ledgers has {} shards but the config has {}",
+                g.len(),
+                cfg.ledger_shards
+            ));
+        }
+        g.into_iter()
+            .map(|a| GatewayClient::with_auth(a, auth.clone()))
+            .collect()
+    };
     let mut last_log = Instant::now();
     match mode.as_str() {
         "forwarder" => {
-            let mut gw = GatewayClient::new(addrs(&ledger));
-            let mut t = TierClient::new(addrs(&tier));
-            let mut r = ForwarderRelay::new(shard);
+            if shard >= cfg.ledger_shards {
+                die("--shard is not in the config");
+            }
+            let mut gw = GatewayClient::with_auth(
+                parse_addrs(&ledger).unwrap_or_else(|e| die(&e)),
+                auth.clone(),
+            );
+            let mut t = tier_clients(&tier);
+            let mut r = ForwarderRelay::new(shard, t.len());
             r.chaos = chaos;
             let (mut moved, mut gaps, mut errs) = (0usize, 0usize, 0usize);
-            println!("forwarder shard {shard} running");
+            println!("forwarder shard {shard} running ({} groups)", t.len());
             loop {
                 match r.step(&mut gw, &mut t) {
                     Ok(s) => {
@@ -120,14 +145,18 @@ fn main() {
             }
         }
         "settler" => {
-            let mut gw = GatewayClient::new(addrs(&ledger));
-            let mut t = TierClient::new(addrs(&tier));
-            let mut r = SettlerRelay::new(shard, (source_base..source_base + partitions).collect());
+            let mut gws = ledger_clients(&ledgers);
+            let mut t = tier_clients(&tier);
+            let mut r = SettlerRelay::new((0..cfg.ledger_shards).collect(), cfg.sources());
             r.chaos = chaos;
             let (mut moved, mut gaps, mut errs) = (0usize, 0usize, 0usize);
-            println!("settler shard {shard} running");
+            println!(
+                "settler running ({} shards, {} streams)",
+                gws.len(),
+                cfg.sources().len()
+            );
             loop {
-                match r.step(&mut gw, &mut t) {
+                match r.step(&mut gws, &mut t) {
                     Ok(s) => {
                         moved += s.moved;
                         gaps += s.gaps;
@@ -137,21 +166,18 @@ fn main() {
                     }
                     Err(e) => {
                         errs += 1;
-                        eprintln!("settler shard {shard}: {e}");
+                        eprintln!("settler: {e}");
                         std::thread::sleep(Duration::from_millis(200));
                     }
                 }
                 if last_log.elapsed() > Duration::from_secs(5) {
-                    println!("settler shard {shard}: settled {moved}, gaps {gaps}, errors {errs}");
+                    println!("settler: settled {moved}, gaps {gaps}, errors {errs}");
                     last_log = Instant::now();
                 }
             }
         }
         "tick" => {
-            let mut gws: Vec<GatewayClient> = ledgers
-                .split(';')
-                .map(|g| GatewayClient::new(addrs(g)))
-                .collect();
+            let mut gws = ledger_clients(&ledgers);
             let t = TickRelay {
                 max_age_ns: max_age * 1_000_000,
                 retry_ns: retry * 1_000_000,
