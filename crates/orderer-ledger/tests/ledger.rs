@@ -222,6 +222,7 @@ fn cancel_checks_ownership_and_queues_once() {
     assert_eq!(
         l.apply(&Cmd::Settle {
             source: 0,
+            prev: 0,
             idx: 5,
             event: Event::Closed { order: o }
         }),
@@ -269,6 +270,7 @@ fn trade_settles_both_sides_with_price_improvement_and_fees() {
     assert_eq!(
         l.apply(&Cmd::Settle {
             source: 0,
+            prev: 0,
             idx: 1,
             event: ev
         }),
@@ -313,6 +315,7 @@ fn trade_settles_both_sides_with_price_improvement_and_fees() {
     assert_eq!(
         l.apply(&Cmd::Settle {
             source: 0,
+            prev: 1,
             idx: 2,
             event: Event::Closed { order: buy }
         }),
@@ -337,6 +340,7 @@ fn settle_is_exactly_once_per_source_mark() {
     let sell = reserve(&mut l, 2, Side::Sell, 100, 1);
     let c = Cmd::Settle {
         source: 4,
+        prev: 0,
         idx: 9,
         event: Event::Trade {
             buy,
@@ -352,6 +356,7 @@ fn settle_is_exactly_once_per_source_mark() {
     assert_eq!(
         l.apply(&Cmd::Settle {
             source: 4,
+            prev: 0,
             idx: 3,
             event: Event::Closed { order: buy }
         }),
@@ -366,6 +371,7 @@ fn settle_is_exactly_once_per_source_mark() {
     assert_eq!(
         l.apply(&Cmd::Settle {
             source: 5,
+            prev: 0,
             idx: 1,
             event: Event::Closed { order: b2 }
         }),
@@ -419,6 +425,7 @@ fn contradictory_events_are_anomalies_that_change_nothing() {
         assert_eq!(
             l.apply(&Cmd::Settle {
                 source: 0,
+                prev: i as u64,
                 idx: i as u64 + 1,
                 event: *ev
             }),
@@ -445,6 +452,7 @@ fn a_replayed_anomaly_is_not_retried() {
     let mut l = Ledger::new(cfg(0, 0));
     let c = Cmd::Settle {
         source: 0,
+        prev: 0,
         idx: 1,
         event: Event::Closed { order: 77 },
     };
@@ -464,6 +472,7 @@ fn a_trade_between_accounts_on_two_shards_applies_only_the_local_side() {
     assert_ne!(order_shard(buy), order_shard(sell));
     let c = Cmd::Settle {
         source: 0,
+        prev: 0,
         idx: 1,
         event: Event::Trade {
             buy,
@@ -576,6 +585,7 @@ fn commands_round_trip_and_garbage_never_panics() {
         },
         Cmd::Settle {
             source: 1,
+            prev: 1,
             idx: 2,
             event: Event::Trade {
                 buy: 1,
@@ -586,6 +596,7 @@ fn commands_round_trip_and_garbage_never_panics() {
         },
         Cmd::Settle {
             source: 1,
+            prev: 1,
             idx: 2,
             event: Event::Closed { order: 5 },
         },
@@ -652,6 +663,7 @@ fn snapshot_restores_exactly_and_rejects_corruption() {
     let sell = reserve(&mut l, 2, Side::Sell, 90, 3);
     l.apply(&Cmd::Settle {
         source: 1,
+        prev: 0,
         idx: 4,
         event: Event::Trade {
             buy,
@@ -679,6 +691,7 @@ fn snapshot_restores_exactly_and_rejects_corruption() {
     // same commands after restore give the same results
     let next = Cmd::Settle {
         source: 1,
+        prev: 4,
         idx: 5,
         event: Event::Closed { order: buy },
     };

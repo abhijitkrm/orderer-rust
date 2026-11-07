@@ -3,162 +3,9 @@
 //! step each shard satisfies `check()`; at quiescence the whole system
 //! conserves money and every hold matches a resting order.
 
+mod common;
+use common::*;
 use orderer_ledger::*;
-use std::collections::BTreeMap;
-
-const BTC: u32 = 1;
-const USD: u32 = 2;
-const ETH: u32 = 3;
-const SYMS: [u32; 2] = [10, 11];
-const ACCOUNTS: u64 = 6;
-
-struct Rng(u64);
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
-    }
-}
-
-fn config(shard: u16) -> Config {
-    let mut symbols = BTreeMap::new();
-    symbols.insert(
-        SYMS[0],
-        Symbol {
-            base: BTC,
-            quote: USD,
-            lot: 1_000,
-        },
-    );
-    symbols.insert(
-        SYMS[1],
-        Symbol {
-            base: ETH,
-            quote: USD,
-            lot: 10,
-        },
-    );
-    Config {
-        shard,
-        fee_ppm: 1_500,
-        symbols,
-    }
-}
-
-#[derive(Clone)]
-struct Rest {
-    id: u64,
-    side: Side,
-    price: u64,
-    remaining: u64,
-    seq: u64,
-}
-
-/// One matching group: price-time books; every 7th order id is immediate-or-cancel.
-#[derive(Default)]
-struct Matcher {
-    books: BTreeMap<u32, Vec<Rest>>,
-    seq: u64,
-    events: Vec<Event>,
-    cursor: BTreeMap<u16, u64>, // per ledger shard: next outbox index accepted
-}
-
-impl Matcher {
-    fn submit(&mut self, order: u64, symbol: u32, side: Side, price: u64, qty: u64) {
-        let book = self.books.entry(symbol).or_default();
-        let mut rem = qty;
-        while rem > 0 {
-            let best = book
-                .iter()
-                .enumerate()
-                .filter(|(_, r)| {
-                    r.side != side
-                        && match side {
-                            Side::Buy => r.price <= price,
-                            Side::Sell => r.price >= price,
-                        }
-                })
-                .min_by_key(|(_, r)| {
-                    let p = if side == Side::Buy {
-                        r.price as i64
-                    } else {
-                        -(r.price as i64)
-                    };
-                    (p, r.seq)
-                })
-                .map(|(i, _)| i);
-            let Some(i) = best else { break };
-            let q = rem.min(book[i].remaining);
-            let (buy, sell) = if side == Side::Buy {
-                (order, book[i].id)
-            } else {
-                (book[i].id, order)
-            };
-            self.events.push(Event::Trade {
-                buy,
-                sell,
-                price: book[i].price,
-                qty: q,
-            });
-            book[i].remaining -= q;
-            rem -= q;
-            if book[i].remaining == 0 {
-                book.remove(i);
-            }
-        }
-        if rem > 0 {
-            if order % 7 == 0 {
-                self.events.push(Event::Closed { order });
-            } else {
-                self.seq += 1;
-                book.push(Rest {
-                    id: order,
-                    side,
-                    price,
-                    remaining: rem,
-                    seq: self.seq,
-                });
-            }
-        }
-    }
-
-    fn cancel(&mut self, order: u64, symbol: u32) {
-        let book = self.books.entry(symbol).or_default();
-        if let Some(i) = book.iter().position(|r| r.id == order) {
-            book.remove(i);
-            self.events.push(Event::Closed { order });
-        }
-    }
-
-    /// Accept an outbox entry exactly once per (shard, index), however often it is sent.
-    fn deliver(&mut self, shard: u16, idx: u64, m: OutMsg) -> bool {
-        let next = self.cursor.entry(shard).or_insert(0);
-        if idx != *next {
-            return false; // duplicate (below) or out of order (above): the session refuses
-        }
-        *next += 1;
-        match m {
-            OutMsg::Submit {
-                order,
-                symbol,
-                side,
-                price,
-                qty,
-            } => self.submit(order, symbol, side, price, qty),
-            OutMsg::Cancel { order, symbol } => self.cancel(order, symbol),
-        }
-        true
-    }
-
-    fn resting(&self) -> usize {
-        self.books.values().map(|b| b.len()).sum()
-    }
-}
 
 struct World {
     shards: Vec<Ledger>,
@@ -231,7 +78,7 @@ impl World {
         let mut sent = 0;
         while sent < how_many && idx < base + msgs.len() as u64 {
             let m = msgs[(idx - base) as usize];
-            if self.matcher.deliver(shard as u16, idx, m) {
+            if self.matcher.deliver(shard as u16, idx, m) == Accept::Applied {
                 self.forwarded[shard] = idx + 1;
             }
             idx += 1;
@@ -239,12 +86,7 @@ impl World {
         }
         self.route_new_events();
         if self.rng.below(3) == 0 {
-            let upto = self
-                .matcher
-                .cursor
-                .get(&(shard as u16))
-                .copied()
-                .unwrap_or(0);
+            let upto = self.matcher.intake.cursor(shard as u16);
             self.apply(shard, Cmd::OutboxAck { upto });
         }
     }
@@ -261,10 +103,16 @@ impl World {
                 return;
             };
             let (idx, event) = self.routed[shard][pos];
+            let prev = if pos == 0 {
+                0
+            } else {
+                self.routed[shard][pos - 1].0
+            };
             self.apply(
                 shard,
                 Cmd::Settle {
                     source: 0,
+                    prev,
                     idx,
                     event,
                 },

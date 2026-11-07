@@ -95,8 +95,14 @@ pub enum Cmd {
         account: AccountId,
         order: OrderId,
     },
+    /// Apply stream event `idx` of matching group `source`. `prev` is the index
+    /// of the previous event of that stream routed to this shard (0 for the
+    /// first); the ledger applies it only if that is exactly its mark, so a
+    /// reordered, skipped or zombie delivery can never advance the mark past
+    /// an event that was not applied.
     Settle {
         source: u32,
+        prev: u64,
         idx: u64,
         event: Event,
     },
@@ -146,6 +152,9 @@ pub enum Reject {
     AlreadyCancelling,
     DuplicateId,
     UnknownId,
+    /// A settle whose `prev` is not this shard's mark: events are missing or
+    /// out of order. Nothing changed; the sender resynchronises.
+    Gap,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -308,7 +317,12 @@ impl Ledger {
                 qty,
             } => self.reserve(account, symbol, side, price, qty),
             Cmd::Cancel { account, order } => self.cancel(account, order),
-            Cmd::Settle { source, idx, event } => self.settle(source, idx, event),
+            Cmd::Settle {
+                source,
+                prev,
+                idx,
+                event,
+            } => self.settle(source, prev, idx, event),
             Cmd::Withdraw {
                 account,
                 asset,
@@ -477,11 +491,13 @@ impl Ledger {
         order_shard(id) == self.cfg.shard
     }
 
-    fn settle(&mut self, source: u32, idx: u64, event: Event) -> Outcome {
-        if let Some(&hw) = self.hw.get(&source) {
-            if idx <= hw {
-                return Outcome::Duplicate;
-            }
+    fn settle(&mut self, source: u32, prev: u64, idx: u64, event: Event) -> Outcome {
+        let hw = self.hw.get(&source).copied().unwrap_or(0);
+        if idx <= hw {
+            return Outcome::Duplicate;
+        }
+        if prev != hw || idx <= prev {
+            return Outcome::Rejected(Reject::Gap);
         }
         let ok = match event {
             Event::Trade {

@@ -5,7 +5,7 @@
 //!   1 Deposit   account u64 | asset u32 | amount u128 | external_id u64
 //!   2 Reserve   account u64 | symbol u32 | side u8 (0 buy, 1 sell) | price u64 | qty u64
 //!   3 Cancel    account u64 | order u64
-//!   4 Settle    source u32 | idx u64 | kind u8 (1 trade, 2 closed) | trade: buy u64 sell u64 price u64 qty u64; closed: order u64
+//!   4 Settle    source u32 | prev u64 | idx u64 | kind u8 (1 trade, 2 closed) | trade: buy u64 sell u64 price u64 qty u64; closed: order u64
 //!   5 Withdraw  account u64 | asset u32 | amount u128 | external_id u64
 //!   6 Finalize  external_id u64 | paid u8
 //!   7 OutboxAck upto u64
@@ -121,9 +121,15 @@ pub fn encode_cmd(c: &Cmd) -> Vec<u8> {
             w.u64(account);
             w.u64(order);
         }
-        Cmd::Settle { source, idx, event } => {
+        Cmd::Settle {
+            source,
+            prev,
+            idx,
+            event,
+        } => {
             w.u8(4);
             w.u32(source);
+            w.u64(prev);
             w.u64(idx);
             match event {
                 Event::Trade {
@@ -191,6 +197,7 @@ pub fn decode_cmd(b: &[u8]) -> Result<Cmd, DecodeError> {
         },
         4 => {
             let source = r.u32()?;
+            let prev = r.u64()?;
             let idx = r.u64()?;
             let event = match r.u8()? {
                 1 => Event::Trade {
@@ -202,7 +209,12 @@ pub fn decode_cmd(b: &[u8]) -> Result<Cmd, DecodeError> {
                 2 => Event::Closed { order: r.u64()? },
                 _ => return Err(DecodeError("bad event kind")),
             };
-            Cmd::Settle { source, idx, event }
+            Cmd::Settle {
+                source,
+                prev,
+                idx,
+                event,
+            }
         }
         5 => Cmd::Withdraw {
             account: r.u64()?,
