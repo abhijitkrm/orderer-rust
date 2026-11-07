@@ -151,6 +151,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "orderer-exchange"
+version = "0.2.1"
+dependencies = [
+ "orderer",
+ "orderer-cluster",
+ "orderer-consensus",
+ "orderer-core",
+ "orderer-ledger",
+]
+
+[[package]]
 name = "orderer-ledger"
 version = "0.2.1"
 dependencies = [
