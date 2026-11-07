@@ -59,6 +59,9 @@ impl<S: StateMachine> StateMachine for Audited<S> {
     fn digest(&mut self, index: Index) -> Option<[u8; 32]> {
         self.inner.digest(index)
     }
+    fn deep_digest(&mut self, index: Index) -> Option<[u8; 32]> {
+        self.inner.deep_digest(index)
+    }
 }
 
 fn main() {

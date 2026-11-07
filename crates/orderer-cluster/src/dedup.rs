@@ -142,6 +142,40 @@ mod tests {
         Entry { term: 1, data: d }
     }
 
+    /// A state machine whose cheap and deep digests differ, to prove a wrapper
+    /// forwards each to the matching one (a wrapper that forwards only `digest`
+    /// silently answers the on-demand state hash with the cheap one).
+    struct TwoDigests;
+    impl StateMachine for TwoDigests {
+        fn apply(&mut self, _: Index, _: &Entry) {}
+        fn snapshot(&mut self, _: Index) -> Vec<u8> {
+            Vec::new()
+        }
+        fn restore(&mut self, _: Index, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn digest(&mut self, _: Index) -> Option<[u8; 32]> {
+            Some([1; 32])
+        }
+        fn deep_digest(&mut self, _: Index) -> Option<[u8; 32]> {
+            Some([2; 32])
+        }
+    }
+
+    #[test]
+    fn the_deep_digest_is_forwarded_not_replaced_by_the_cheap_one() {
+        let mut sm = DedupSm::new(TwoDigests);
+        let (cheap, deep) = (sm.digest(1).unwrap(), sm.deep_digest(1).unwrap());
+        assert_ne!(cheap, deep);
+        let mut b = sm.table_bytes();
+        b.extend_from_slice(&[2; 32]);
+        assert_eq!(
+            deep,
+            sha256(&b),
+            "deep digest does not come from the inner deep digest"
+        );
+    }
+
     #[test]
     fn a_retried_batch_takes_effect_once() {
         let mut sm = DedupSm::new(Count::default());
