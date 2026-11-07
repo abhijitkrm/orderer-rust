@@ -68,6 +68,9 @@ struct Sys {
     known_orders: Vec<(u64, u64)>,
     next_ext: u64,
     stats: Stats,
+    now: u64,
+    /// The settler relay is stalled (a stuck process, a partition).
+    settler_blocked: bool,
 }
 
 #[derive(Default, Debug)]
@@ -78,6 +81,11 @@ struct Stats {
     failovers: u64,
     gaps_refused: u64,
     intake_gaps: u64,
+    sweeps_queued: u64,
+    blocked_ticks: u64,
+    adjusts: u64,
+    fee_withdrawals: u64,
+    fees_total: u128,
 }
 
 impl Sys {
@@ -98,6 +106,8 @@ impl Sys {
             known_orders: Vec::new(),
             next_ext: 1,
             stats: Stats::default(),
+            now: 0,
+            settler_blocked: false,
         }
     }
 
@@ -254,6 +264,10 @@ impl Sys {
     }
 
     fn tick_settler(&mut self, shard: usize) {
+        if self.settler_blocked {
+            self.stats.blocked_ticks += 1;
+            return;
+        }
         match self.settlers[shard].acked {
             None => self.send(Msg::HwQuery { shard }),
             Some(_) => {
@@ -279,7 +293,7 @@ impl Sys {
     fn client_op(&mut self) {
         let account = 1 + self.rng.below(ACCOUNTS);
         let shard = (account % self.n() as u64) as usize;
-        let kind = self.rng.below(12);
+        let kind = self.rng.below(15);
         match kind {
             0..=2 => {
                 let asset = [BTC, USD, ETH][self.rng.below(3) as usize];
@@ -328,6 +342,31 @@ impl Sys {
                         order,
                     },
                 );
+            }
+            12 => {
+                let asset = [BTC, USD, ETH][self.rng.below(3) as usize];
+                let c = Cmd::Adjust {
+                    account,
+                    asset,
+                    amount: 1 + self.rng.below(500) as u128,
+                    credit: self.rng.below(2) == 0,
+                    reason: self.rng.below(5) as u32,
+                    external_id: self.rng.below(60),
+                };
+                if self.ledger_apply(shard, c) == Outcome::Adjusted {
+                    self.stats.adjusts += 1;
+                }
+            }
+            13 => {
+                let asset = [BTC, USD, ETH][self.rng.below(3) as usize];
+                let c = Cmd::FeeWithdraw {
+                    asset,
+                    amount: 1 + self.rng.below(20) as u128,
+                    external_id: self.rng.below(30),
+                };
+                if self.ledger_apply(shard, c) == Outcome::WithdrawHeld {
+                    self.stats.fee_withdrawals += 1;
+                }
             }
             _ => {
                 let asset = [BTC, USD, ETH][self.rng.below(3) as usize];
@@ -383,7 +422,7 @@ impl Sys {
     }
 
     fn step(&mut self) {
-        match self.rng.below(100) {
+        match self.rng.below(110) {
             0..=24 => self.client_op(),
             25..=64 => self.deliver_one(),
             65..=73 => {
@@ -404,6 +443,33 @@ impl Sys {
                 }
             }
             87..=89 => self.crash_or_failover(),
+            90..=93 => {
+                // the sequencer's clock, reaching each shard separately
+                self.now += self.rng.below(4_000);
+                let s = self.rng.below(self.n() as u64) as usize;
+                self.ledger_apply(s, Cmd::Clock { now_ns: self.now });
+            }
+            94..=96 => {
+                // the reconciler
+                let s = self.rng.below(self.n() as u64) as usize;
+                let c = Cmd::Sweep {
+                    max_age_ns: 15_000,
+                    retry_ns: 40_000,
+                    max: 8,
+                };
+                if let Outcome::Swept { queued } = self.ledger_apply(s, c) {
+                    self.stats.sweeps_queued += queued as u64;
+                }
+            }
+            97 => {
+                if self.settler_blocked {
+                    if self.rng.below(8) == 0 {
+                        self.settler_blocked = false;
+                    }
+                } else if self.rng.below(2) == 0 {
+                    self.settler_blocked = true;
+                }
+            }
             _ => {}
         }
         for (i, l) in self.shards.iter().enumerate() {
@@ -411,11 +477,23 @@ impl Sys {
                 panic!("shard {i}: {e}");
             }
         }
+        // a hold is never released while the order is still live in matching
+        for book in self.matcher.books.values() {
+            for r in book {
+                let sh = order_shard(r.id) as usize;
+                assert!(
+                    self.shards[sh].order(r.id).is_some(),
+                    "order {:#x} rests in matching but the ledger released it",
+                    r.id
+                );
+            }
+        }
     }
 
     /// Stop faults and run the relays until nothing is left to do.
     fn drain(&mut self, what: &str) {
         self.faults = false;
+        self.settler_blocked = false;
         for round in 0..400 {
             for s in 0..self.n() {
                 if round % 5 == 0 {
@@ -466,7 +544,11 @@ impl Sys {
     fn assert_conserved(&self) {
         for asset in [BTC, USD, ETH] {
             let (mut have, mut wd, mut dep, mut inn, mut out) = (0u128, 0u128, 0u128, 0u128, 0u128);
+            let (mut ain, mut aout) = (0u128, 0u128);
             for l in &self.shards {
+                let (ai, ao) = l.adjusted_flow(asset);
+                ain += ai;
+                aout += ao;
                 have += l.holdings(asset);
                 let (d, w) = l.external_net(asset);
                 dep += d;
@@ -479,7 +561,11 @@ impl Sys {
                 inn, out,
                 "asset {asset}: trades must move exactly what they take"
             );
-            assert_eq!(have + wd, dep, "asset {asset}: money is conserved");
+            assert_eq!(
+                have + wd + aout,
+                dep + ain,
+                "asset {asset}: money is conserved"
+            );
         }
     }
 }
@@ -498,12 +584,34 @@ fn run(n: usize, seed: u64, steps: usize) -> Stats {
             "seed {seed}: shard {sh} outbox"
         );
     }
-    // cancel everything, drain again, and everything is released
-    let orders = s.known_orders.clone();
-    for (account, order) in orders {
-        s.ledger_apply(order_shard(order) as usize, Cmd::Cancel { account, order });
+    // I5: nobody cancels; the reconciler alone must end every order and release
+    // every hold, within a few rounds, with matching and the relays healthy
+    let mut rounds = 0;
+    while s.shards.iter().any(|l| l.open_orders() > 0) {
+        rounds += 1;
+        assert!(
+            rounds <= 5,
+            "seed {seed}: orders still open after {rounds} sweeps"
+        );
+        s.now += 1_000_000;
+        for sh in 0..n {
+            s.ledger_apply(sh, Cmd::Clock { now_ns: s.now });
+            s.ledger_apply(
+                sh,
+                Cmd::Sweep {
+                    max_age_ns: 1,
+                    retry_ns: 1,
+                    max: 100_000,
+                },
+            );
+        }
+        s.drain("sweep drain");
     }
-    s.drain("second drain");
+    assert_eq!(
+        s.matcher.resting(),
+        0,
+        "seed {seed}: matching still has live orders"
+    );
     for id in 0..30 {
         for sh in 0..n {
             s.ledger_apply(
@@ -519,6 +627,51 @@ fn run(n: usize, seed: u64, steps: usize) -> Stats {
         l.check().unwrap();
         assert_eq!(l.anomalies(), 0);
     }
+    s.stats.fees_total = s
+        .shards
+        .iter()
+        .map(|l| l.fees(BTC) + l.fees(USD) + l.fees(ETH))
+        .sum();
+    // pay out every shard's fees: half paid, half returned, then paid again
+    for sh in 0..n {
+        for (i, asset) in [BTC, USD, ETH].into_iter().enumerate() {
+            let have = s.shards[sh].fees(asset);
+            if have == 0 {
+                continue;
+            }
+            let id = 5_000 + (sh * 3 + i) as u64;
+            let c = Cmd::FeeWithdraw {
+                asset,
+                amount: have,
+                external_id: id,
+            };
+            assert_eq!(s.ledger_apply(sh, c), Outcome::WithdrawHeld);
+            assert_eq!(s.shards[sh].fees(asset), 0);
+            s.ledger_apply(
+                sh,
+                Cmd::Finalize {
+                    external_id: id,
+                    paid: false,
+                },
+            );
+            assert_eq!(s.shards[sh].fees(asset), have);
+            let id = id + 1_000;
+            let c = Cmd::FeeWithdraw {
+                asset,
+                amount: have,
+                external_id: id,
+            };
+            s.ledger_apply(sh, c);
+            s.ledger_apply(
+                sh,
+                Cmd::Finalize {
+                    external_id: id,
+                    paid: true,
+                },
+            );
+            assert_eq!(s.shards[sh].fees(asset), 0);
+        }
+    }
     s.assert_conserved();
     let open: usize = s.shards.iter().map(|l| l.open_orders()).sum();
     assert_eq!(
@@ -529,9 +682,7 @@ fn run(n: usize, seed: u64, steps: usize) -> Stats {
     for l in &s.shards {
         for a in 1..=ACCOUNTS {
             for asset in [BTC, USD, ETH] {
-                let b = l.balance(a, asset);
-                let resting_hold = s.matcher.resting() > 0;
-                assert!(resting_hold || b.held == 0, "seed {seed}: hold left behind");
+                assert_eq!(l.balance(a, asset).held, 0, "seed {seed}: hold left behind");
             }
         }
     }
@@ -575,9 +726,19 @@ fn the_faults_actually_happen() {
         t.failovers += s.failovers;
         t.gaps_refused += s.gaps_refused;
         t.intake_gaps += s.intake_gaps;
+        t.sweeps_queued += s.sweeps_queued;
+        t.blocked_ticks += s.blocked_ticks;
+        t.adjusts += s.adjusts;
+        t.fee_withdrawals += s.fee_withdrawals;
+        t.fees_total += s.fees_total;
     }
     eprintln!("{t:?}");
     assert!(t.dropped > 100 && t.duplicated > 100 && t.crashes > 50 && t.failovers > 10);
+    assert!(
+        t.sweeps_queued > 50 && t.blocked_ticks > 200,
+        "the reconciler and the stall must happen"
+    );
+    assert!(t.adjusts > 50 && t.fee_withdrawals > 3 && t.fees_total > 0);
     assert!(
         t.gaps_refused > 10,
         "reordering must reach the ledger's gap check"

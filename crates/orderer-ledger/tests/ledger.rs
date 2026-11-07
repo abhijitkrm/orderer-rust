@@ -22,6 +22,7 @@ fn cfg(shard: u16, fee_ppm: u32) -> Config {
         shard,
         fee_ppm,
         symbols,
+        fees: BTreeMap::new(),
     }
 }
 
@@ -266,6 +267,7 @@ fn trade_settles_both_sides_with_price_improvement_and_fees() {
         sell,
         price: 110,
         qty: 4,
+        taker_is_buy: true,
     };
     assert_eq!(
         l.apply(&Cmd::Settle {
@@ -347,6 +349,7 @@ fn settle_is_exactly_once_per_source_mark() {
             sell,
             price: 100,
             qty: 1,
+            taker_is_buy: true,
         },
     };
     assert_eq!(l.apply(&c), Outcome::Settled);
@@ -394,30 +397,35 @@ fn contradictory_events_are_anomalies_that_change_nothing() {
             sell,
             price: 101,
             qty: 1,
+            taker_is_buy: true,
         }, // above the buyer's limit
         Event::Trade {
             buy,
             sell,
             price: 99,
             qty: 3,
+            taker_is_buy: true,
         }, // more than the buyer has left
         Event::Trade {
             buy: sell,
             sell: buy,
             price: 100,
             qty: 1,
+            taker_is_buy: true,
         }, // sides swapped
         Event::Trade {
             buy,
             sell: buy,
             price: 100,
             qty: 1,
+            taker_is_buy: true,
         },
         Event::Trade {
             buy,
             sell,
             price: 100,
             qty: 0,
+            taker_is_buy: true,
         },
         Event::Closed { order: 0xdead },
     ];
@@ -479,6 +487,7 @@ fn a_trade_between_accounts_on_two_shards_applies_only_the_local_side() {
             sell,
             price: 100,
             qty: 2,
+            taker_is_buy: true,
         },
     };
     assert_eq!(a.apply(&c), Outcome::Settled);
@@ -592,6 +601,7 @@ fn commands_round_trip_and_garbage_never_panics() {
                 sell: 2,
                 price: 3,
                 qty: 4,
+                taker_is_buy: true,
             },
         },
         Cmd::Settle {
@@ -670,6 +680,7 @@ fn snapshot_restores_exactly_and_rejects_corruption() {
             sell,
             price: 95,
             qty: 2,
+            taker_is_buy: true,
         },
     });
     l.apply(&Cmd::Cancel {
@@ -705,7 +716,7 @@ fn snapshot_restores_exactly_and_rejects_corruption() {
     let mut bad = Ledger::new(cfg(2, 500));
     let mut tampered = snap.clone();
     // balances start at byte 4+2+8+8+8+4; flip a low byte of the first `held`
-    let held_at = 4 + 2 + 8 + 8 + 8 + 4 + 8 + 4 + 16;
+    let held_at = 4 + 2 + 8 + 8 + 8 + 8 + 4 + 8 + 4 + 16;
     tampered[held_at] ^= 1;
     assert!(bad.restore(&tampered).is_err());
 }

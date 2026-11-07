@@ -19,7 +19,7 @@ mod sm;
 pub use codec::{decode_cmd, encode_cmd, DecodeError};
 pub use flow::{settle_cmds, Accept, Forwarder, Intake, Send};
 pub use ledger::{
-    order_shard, Amount, AssetId, Balance, Cmd, Config, Event, Ledger, Order, OrderId, OutMsg,
-    Outcome, Reject, Side, Symbol, SymbolId, SHARD_SHIFT,
+    order_shard, Adjustment, Amount, AssetId, Balance, Cmd, Config, Event, Ledger, Order, OrderId,
+    OutMsg, Outcome, Reject, Side, Symbol, SymbolId, ADJUST_LOG, FEE_ACCOUNT, SHARD_SHIFT,
 };
 pub use sm::LedgerSm;

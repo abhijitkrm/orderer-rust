@@ -41,10 +41,13 @@ pub fn config(shard: u16) -> Config {
             lot: 10,
         },
     );
+    let mut fees = BTreeMap::new();
+    fees.insert(SYMS[1], (5_000, 25_000)); // maker pays less than taker on one symbol
     Config {
         shard,
-        fee_ppm: 1_500,
+        fee_ppm: 15_000,
         symbols,
+        fees,
     }
 }
 
@@ -102,6 +105,7 @@ impl Matcher {
                 sell,
                 price: book[i].price,
                 qty: q,
+                taker_is_buy: side == Side::Buy,
             });
             book[i].remaining -= q;
             rem -= q;

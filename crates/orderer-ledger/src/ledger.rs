@@ -19,6 +19,12 @@ pub fn order_shard(id: OrderId) -> u16 {
 
 const PPM: u128 = 1_000_000;
 
+/// The system account that fees accrue to; no user command may name it.
+pub const FEE_ACCOUNT: AccountId = u64::MAX;
+
+/// How many recent adjustments the audit ring keeps.
+pub const ADJUST_LOG: usize = 256;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
     Buy,
@@ -37,9 +43,20 @@ pub struct Symbol {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub shard: u16,
-    /// Fee on what each side receives, in parts per million, floored.
+    /// Default fee on what each side receives, in parts per million, floored.
     pub fee_ppm: u32,
     pub symbols: BTreeMap<SymbolId, Symbol>,
+    /// Per-symbol `(maker_ppm, taker_ppm)`, overriding `fee_ppm`.
+    pub fees: BTreeMap<SymbolId, (u32, u32)>,
+}
+
+impl Config {
+    fn fee_pair(&self, symbol: SymbolId) -> (u32, u32) {
+        self.fees
+            .get(&symbol)
+            .copied()
+            .unwrap_or((self.fee_ppm, self.fee_ppm))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -58,6 +75,10 @@ pub struct Order {
     pub remaining: u64,
     pub held: Amount,
     pub cancelling: bool,
+    /// Ledger clock when the order was reserved.
+    pub born: u64,
+    /// Ledger clock when a cancel was last queued (0 unless `cancelling`).
+    pub cancel_at: u64,
 }
 
 /// An event from a matching group, as the ledger needs it. `Closed` covers an
@@ -65,11 +86,14 @@ pub struct Order {
 /// rejected by matching.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
+    /// `taker_is_buy`: the buy order was the aggressor (the sell was resting),
+    /// which decides who pays the taker and who the maker fee.
     Trade {
         buy: OrderId,
         sell: OrderId,
         price: u64,
         qty: u64,
+        taker_is_buy: bool,
     },
     Closed {
         order: OrderId,
@@ -120,6 +144,50 @@ pub enum Cmd {
     OutboxAck {
         upto: u64,
     },
+    /// Advance the ledger clock to `now_ns` (never backwards). The only source
+    /// of time in the state machine, so replicas agree on every age.
+    Clock {
+        now_ns: u64,
+    },
+    /// The reconciler: queue a cancel for open orders older than `max_age_ns`
+    /// that have none queued, and re-queue one for orders whose cancel was
+    /// queued at least `retry_ns` ago (0 = never retry), at most `max` in all.
+    /// Re-sent cancels are harmless: matching treats a cancel of an order that
+    /// is not resting as a no-op. It never releases a hold itself; only matching
+    /// events do, because an order may still be live.
+    Sweep {
+        max_age_ns: u64,
+        retry_ns: u64,
+        max: u32,
+    },
+    /// Administrative credit or debit with an audit reason, idempotent by
+    /// `external_id`, never below zero, counted in conservation.
+    Adjust {
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
+        credit: bool,
+        reason: u32,
+        external_id: u64,
+    },
+    /// Move accrued fees of `asset` out through the withdrawal machinery
+    /// (`Finalize` pays or returns them to the fee pool).
+    FeeWithdraw {
+        asset: AssetId,
+        amount: Amount,
+        external_id: u64,
+    },
+}
+
+/// One entry of the adjustment audit ring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Adjustment {
+    pub external_id: u64,
+    pub account: AccountId,
+    pub asset: AssetId,
+    pub credit: bool,
+    pub amount: Amount,
+    pub reason: u32,
 }
 
 /// A message for a matching group, delivered at least once by a forwarder
@@ -155,6 +223,8 @@ pub enum Reject {
     /// A settle whose `prev` is not this shard's mark: events are missing or
     /// out of order. Nothing changed; the sender resynchronises.
     Gap,
+    /// The command names the fee system account.
+    ReservedAccount,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,6 +243,12 @@ pub enum Outcome {
     WithdrawHeld,
     WithdrawDone,
     Acked,
+    Ticked,
+    /// Cancels queued by a sweep.
+    Swept {
+        queued: u32,
+    },
+    Adjusted,
     Rejected(Reject),
     /// The command could not be applied consistently (a matching event that
     /// contradicts ledger state, or an undecodable entry). Nothing changed
@@ -197,6 +273,11 @@ pub struct Ledger {
     pub(crate) settled_in: BTreeMap<AssetId, Amount>,
     pub(crate) settled_out: BTreeMap<AssetId, Amount>,
     pub(crate) anomalies: u64,
+    pub(crate) clock: u64,
+    pub(crate) adjust_ids: BTreeSet<u64>,
+    pub(crate) adjusted_in: BTreeMap<AssetId, Amount>,
+    pub(crate) adjusted_out: BTreeMap<AssetId, Amount>,
+    pub(crate) adjust_log: VecDeque<Adjustment>,
 }
 
 fn bump(map: &mut BTreeMap<AssetId, Amount>, asset: AssetId, by: Amount) {
@@ -229,6 +310,11 @@ impl Ledger {
             settled_in: BTreeMap::new(),
             settled_out: BTreeMap::new(),
             anomalies: 0,
+            clock: 0,
+            adjust_ids: BTreeSet::new(),
+            adjusted_in: BTreeMap::new(),
+            adjusted_out: BTreeMap::new(),
+            adjust_log: VecDeque::new(),
         }
     }
 
@@ -249,6 +335,20 @@ impl Ledger {
     }
     pub fn fees(&self, asset: AssetId) -> Amount {
         self.fees.get(&asset).copied().unwrap_or(0)
+    }
+    pub fn clock(&self) -> u64 {
+        self.clock
+    }
+    /// Administrative credits and debits applied, per asset: `(in, out)`.
+    pub fn adjusted_flow(&self, asset: AssetId) -> (Amount, Amount) {
+        (
+            self.adjusted_in.get(&asset).copied().unwrap_or(0),
+            self.adjusted_out.get(&asset).copied().unwrap_or(0),
+        )
+    }
+    /// The most recent adjustments, oldest first (at most [`ADJUST_LOG`]).
+    pub fn adjustments(&self) -> impl Iterator<Item = &Adjustment> {
+        self.adjust_log.iter()
     }
     pub fn anomalies(&self) -> u64 {
         self.anomalies
@@ -303,6 +403,14 @@ impl Ledger {
 
     pub fn apply(&mut self, cmd: &Cmd) -> Outcome {
         match *cmd {
+            Cmd::Deposit { account, .. }
+            | Cmd::Reserve { account, .. }
+            | Cmd::Withdraw { account, .. }
+            | Cmd::Adjust { account, .. }
+                if account == FEE_ACCOUNT =>
+            {
+                Outcome::Rejected(Reject::ReservedAccount)
+            }
             Cmd::Deposit {
                 account,
                 asset,
@@ -338,7 +446,118 @@ impl Ledger {
                 }
                 Outcome::Acked
             }
+            Cmd::Clock { now_ns } => {
+                self.clock = self.clock.max(now_ns);
+                Outcome::Ticked
+            }
+            Cmd::Sweep {
+                max_age_ns,
+                retry_ns,
+                max,
+            } => self.sweep(max_age_ns, retry_ns, max),
+            Cmd::Adjust {
+                account,
+                asset,
+                amount,
+                credit,
+                reason,
+                external_id,
+            } => self.adjust(account, asset, amount, credit, reason, external_id),
+            Cmd::FeeWithdraw {
+                asset,
+                amount,
+                external_id,
+            } => self.fee_withdraw(asset, amount, external_id),
         }
+    }
+
+    fn sweep(&mut self, max_age_ns: u64, retry_ns: u64, max: u32) -> Outcome {
+        let now = self.clock;
+        let mut todo: Vec<OrderId> = Vec::new();
+        for (id, o) in &self.orders {
+            if todo.len() as u32 >= max {
+                break;
+            }
+            let due = if o.cancelling {
+                retry_ns > 0 && now.saturating_sub(o.cancel_at) >= retry_ns
+            } else {
+                now.saturating_sub(o.born) >= max_age_ns
+            };
+            if due {
+                todo.push(*id);
+            }
+        }
+        for id in &todo {
+            let o = self.orders.get_mut(id).unwrap();
+            o.cancelling = true;
+            o.cancel_at = now;
+            let symbol = o.symbol;
+            self.outbox.push_back(OutMsg::Cancel { order: *id, symbol });
+        }
+        Outcome::Swept {
+            queued: todo.len() as u32,
+        }
+    }
+
+    fn adjust(
+        &mut self,
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
+        credit: bool,
+        reason: u32,
+        id: u64,
+    ) -> Outcome {
+        if amount == 0 {
+            return Outcome::Rejected(Reject::BadAmount);
+        }
+        if self.adjust_ids.contains(&id) {
+            return Outcome::Duplicate;
+        }
+        let b = self.balance(account, asset);
+        if credit {
+            let tot = self.adjusted_in.get(&asset).copied().unwrap_or(0);
+            if b.available.checked_add(amount).is_none() || tot.checked_add(amount).is_none() {
+                return Outcome::Rejected(Reject::Overflow);
+            }
+            self.bal(account, asset).available += amount;
+            bump(&mut self.adjusted_in, asset, amount);
+        } else {
+            if b.available < amount {
+                return Outcome::Rejected(Reject::Insufficient);
+            }
+            self.bal(account, asset).available -= amount;
+            bump(&mut self.adjusted_out, asset, amount);
+        }
+        self.adjust_ids.insert(id);
+        if self.adjust_log.len() == ADJUST_LOG {
+            self.adjust_log.pop_front();
+        }
+        self.adjust_log.push_back(Adjustment {
+            external_id: id,
+            account,
+            asset,
+            credit,
+            amount,
+            reason,
+        });
+        Outcome::Adjusted
+    }
+
+    fn fee_withdraw(&mut self, asset: AssetId, amount: Amount, id: u64) -> Outcome {
+        if amount == 0 {
+            return Outcome::Rejected(Reject::BadAmount);
+        }
+        if self.withdraw_ids.contains(&id) {
+            return Outcome::Rejected(Reject::DuplicateId);
+        }
+        if self.fees(asset) < amount {
+            return Outcome::Rejected(Reject::Insufficient);
+        }
+        self.withdraw_ids.insert(id);
+        *self.fees.get_mut(&asset).unwrap() -= amount;
+        self.pending.insert(id, (FEE_ACCOUNT, asset, amount));
+        Outcome::WithdrawHeld
     }
 
     fn bal(&mut self, a: AccountId, asset: AssetId) -> &mut Balance {
@@ -425,6 +644,8 @@ impl Ledger {
                 remaining: qty,
                 held: hold,
                 cancelling: false,
+                born: self.clock,
+                cancel_at: 0,
             },
         );
         let outbox = self.outbox_next();
@@ -449,6 +670,7 @@ impl Ledger {
             return Outcome::Rejected(Reject::AlreadyCancelling);
         }
         o.cancelling = true;
+        o.cancel_at = self.clock;
         let symbol = o.symbol;
         let outbox = self.outbox_next();
         self.outbox.push_back(OutMsg::Cancel { order, symbol });
@@ -481,6 +703,8 @@ impl Ledger {
         };
         if paid {
             bump(&mut self.withdrawn, asset, amount);
+        } else if account == FEE_ACCOUNT {
+            bump(&mut self.fees, asset, amount);
         } else {
             self.bal(account, asset).available += amount;
         }
@@ -505,7 +729,8 @@ impl Ledger {
                 sell,
                 price,
                 qty,
-            } => self.settle_trade(buy, sell, price, qty),
+                taker_is_buy,
+            } => self.settle_trade(buy, sell, price, qty, taker_is_buy),
             Event::Closed { order } => self.settle_closed(order),
         };
         // The mark advances even for an anomaly: a replay must not retry it.
@@ -551,7 +776,14 @@ impl Ledger {
         (o.side == side && o.remaining >= qty && limit_ok && qty > 0).then_some(sym)
     }
 
-    fn settle_trade(&mut self, buy: OrderId, sell: OrderId, price: u64, qty: u64) -> bool {
+    fn settle_trade(
+        &mut self,
+        buy: OrderId,
+        sell: OrderId,
+        price: u64,
+        qty: u64,
+        taker_is_buy: bool,
+    ) -> bool {
         let (lb, ls) = (self.local(buy), self.local(sell));
         if !lb && !ls || buy == sell {
             return false;
@@ -575,10 +807,10 @@ impl Ledger {
             }
         }
         if lb {
-            self.apply_buy(buy, &sb.unwrap(), price, qty);
+            self.apply_buy(buy, &sb.unwrap(), price, qty, taker_is_buy);
         }
         if ls {
-            self.apply_sell(sell, &ss.unwrap(), price, qty);
+            self.apply_sell(sell, &ss.unwrap(), price, qty, !taker_is_buy);
         }
         true
     }
@@ -598,12 +830,13 @@ impl Ledger {
         }
     }
 
-    fn apply_buy(&mut self, id: OrderId, sym: &Symbol, price: u64, qty: u64) {
+    fn apply_buy(&mut self, id: OrderId, sym: &Symbol, price: u64, qty: u64, taker: bool) {
         let o = self.orders[&id].clone();
         let held = o.price as u128 * qty as u128;
         let paid = price as u128 * qty as u128;
         let recv = sym.lot * qty as u128;
-        let fee = fee_of(recv, self.cfg.fee_ppm);
+        let (maker, taker_ppm) = self.cfg.fee_pair(o.symbol);
+        let fee = fee_of(recv, if taker { taker_ppm } else { maker });
         let b = self.bal(o.account, sym.quote);
         b.held -= held;
         b.available += held - paid;
@@ -615,11 +848,12 @@ impl Ledger {
         self.fill(id, qty, held);
     }
 
-    fn apply_sell(&mut self, id: OrderId, sym: &Symbol, price: u64, qty: u64) {
+    fn apply_sell(&mut self, id: OrderId, sym: &Symbol, price: u64, qty: u64, taker: bool) {
         let o = self.orders[&id].clone();
         let sold = sym.lot * qty as u128;
         let recv = price as u128 * qty as u128;
-        let fee = fee_of(recv, self.cfg.fee_ppm);
+        let (maker, taker_ppm) = self.cfg.fee_pair(o.symbol);
+        let fee = fee_of(recv, if taker { taker_ppm } else { maker });
         let b = self.bal(o.account, sym.base);
         b.held -= sold;
         let b = self.bal(o.account, sym.quote);
@@ -657,6 +891,12 @@ impl Ledger {
             if o.held != want {
                 return Err(format!("order {id:#x} holds {} but needs {want}", o.held));
             }
+            if o.born > self.clock
+                || o.cancel_at > self.clock
+                || (!o.cancelling && o.cancel_at != 0)
+            {
+                return Err(format!("order {id:#x} has inconsistent times"));
+            }
             *held.entry((o.account, self.hold_asset(o))).or_insert(0) += o.held;
         }
         for (k, b) in &self.balances {
@@ -683,12 +923,16 @@ impl Ledger {
         assets.extend(self.deposited.keys());
         assets.extend(self.settled_in.keys());
         assets.extend(self.settled_out.keys());
+        assets.extend(self.adjusted_in.keys());
+        assets.extend(self.adjusted_out.keys());
+        assets.extend(self.fees.keys());
         for a in assets {
             let (dep, wd) = self.external_net(a);
             let (inn, out) = self.settled_flow(a);
+            let (ain, aout) = self.adjusted_flow(a);
             let have = self.holdings(a);
-            if have + wd + out != dep + inn {
-                return Err(format!("asset {a}: holdings {have} + withdrawn {wd} + out {out} != deposited {dep} + in {inn}"));
+            if have + wd + out + aout != dep + inn + ain {
+                return Err(format!("asset {a}: holdings {have} + withdrawn {wd} + out {out} + adjusted out {aout} != deposited {dep} + in {inn} + adjusted in {ain}"));
             }
         }
         if self.anomalies != 0 {

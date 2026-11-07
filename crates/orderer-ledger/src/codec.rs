@@ -9,6 +9,12 @@
 //!   5 Withdraw  account u64 | asset u32 | amount u128 | external_id u64
 //!   6 Finalize  external_id u64 | paid u8
 //!   7 OutboxAck upto u64
+//!   8 Clock     now_ns u64
+//!   9 Sweep     max_age_ns u64 | retry_ns u64 | max u32
+//!  10 Adjust    account u64 | asset u32 | credit u8 | amount u128 | reason u32 | external_id u64
+//!  11 FeeWithdraw asset u32 | amount u128 | external_id u64
+//! A trade event (kind 1) ends with `taker_is_buy u8` (changed in step 4; the
+//! other layouts are unchanged).
 
 use crate::ledger::*;
 use orderer_cluster::sha256::sha256;
@@ -137,12 +143,14 @@ pub fn encode_cmd(c: &Cmd) -> Vec<u8> {
                     sell,
                     price,
                     qty,
+                    taker_is_buy,
                 } => {
                     w.u8(1);
                     w.u64(buy);
                     w.u64(sell);
                     w.u64(price);
                     w.u64(qty);
+                    w.u8(taker_is_buy as u8);
                 }
                 Event::Closed { order } => {
                     w.u8(2);
@@ -170,6 +178,46 @@ pub fn encode_cmd(c: &Cmd) -> Vec<u8> {
         Cmd::OutboxAck { upto } => {
             w.u8(7);
             w.u64(upto);
+        }
+        Cmd::Clock { now_ns } => {
+            w.u8(8);
+            w.u64(now_ns);
+        }
+        Cmd::Sweep {
+            max_age_ns,
+            retry_ns,
+            max,
+        } => {
+            w.u8(9);
+            w.u64(max_age_ns);
+            w.u64(retry_ns);
+            w.u32(max);
+        }
+        Cmd::Adjust {
+            account,
+            asset,
+            amount,
+            credit,
+            reason,
+            external_id,
+        } => {
+            w.u8(10);
+            w.u64(account);
+            w.u32(asset);
+            w.u8(credit as u8);
+            w.u128(amount);
+            w.u32(reason);
+            w.u64(external_id);
+        }
+        Cmd::FeeWithdraw {
+            asset,
+            amount,
+            external_id,
+        } => {
+            w.u8(11);
+            w.u32(asset);
+            w.u128(amount);
+            w.u64(external_id);
         }
     }
     w.0
@@ -205,6 +253,7 @@ pub fn decode_cmd(b: &[u8]) -> Result<Cmd, DecodeError> {
                     sell: r.u64()?,
                     price: r.u64()?,
                     qty: r.u64()?,
+                    taker_is_buy: r.bool()?,
                 },
                 2 => Event::Closed { order: r.u64()? },
                 _ => return Err(DecodeError("bad event kind")),
@@ -227,13 +276,32 @@ pub fn decode_cmd(b: &[u8]) -> Result<Cmd, DecodeError> {
             paid: r.bool()?,
         },
         7 => Cmd::OutboxAck { upto: r.u64()? },
+        8 => Cmd::Clock { now_ns: r.u64()? },
+        9 => Cmd::Sweep {
+            max_age_ns: r.u64()?,
+            retry_ns: r.u64()?,
+            max: r.u32()?,
+        },
+        10 => Cmd::Adjust {
+            account: r.u64()?,
+            asset: r.u32()?,
+            credit: r.bool()?,
+            amount: r.u128()?,
+            reason: r.u32()?,
+            external_id: r.u64()?,
+        },
+        11 => Cmd::FeeWithdraw {
+            asset: r.u32()?,
+            amount: r.u128()?,
+            external_id: r.u64()?,
+        },
         _ => return Err(DecodeError("unknown command")),
     };
     r.done()?;
     Ok(c)
 }
 
-const MAGIC: &[u8; 4] = b"LDG1";
+const MAGIC: &[u8; 4] = b"LDG2";
 
 fn put_map(w: &mut W, m: &BTreeMap<AssetId, Amount>) {
     w.u32(m.len() as u32);
@@ -263,6 +331,7 @@ impl Ledger {
         w.u64(self.next_order);
         w.u64(self.outbox_base);
         w.u64(self.anomalies);
+        w.u64(self.clock);
         w.u32(self.balances.len() as u32);
         for ((a, asset), b) in &self.balances {
             w.u64(*a);
@@ -280,6 +349,8 @@ impl Ledger {
             w.u64(o.remaining);
             w.u128(o.held);
             w.u8(o.cancelling as u8);
+            w.u64(o.born);
+            w.u64(o.cancel_at);
         }
         w.u32(self.outbox.len() as u32);
         for m in &self.outbox {
@@ -329,8 +400,23 @@ impl Ledger {
             &self.withdrawn,
             &self.settled_in,
             &self.settled_out,
+            &self.adjusted_in,
+            &self.adjusted_out,
         ] {
             put_map(&mut w, m);
+        }
+        w.u32(self.adjust_ids.len() as u32);
+        for id in &self.adjust_ids {
+            w.u64(*id);
+        }
+        w.u32(self.adjust_log.len() as u32);
+        for a in &self.adjust_log {
+            w.u64(a.external_id);
+            w.u64(a.account);
+            w.u32(a.asset);
+            w.u8(a.credit as u8);
+            w.u128(a.amount);
+            w.u32(a.reason);
         }
         w.0
     }
@@ -366,6 +452,7 @@ impl Ledger {
         l.next_order = r.u64()?;
         l.outbox_base = r.u64()?;
         l.anomalies = r.u64()?;
+        l.clock = r.u64()?;
         for _ in 0..r.u32()? {
             let k = (r.u64()?, r.u32()?);
             let b = Balance {
@@ -386,6 +473,8 @@ impl Ledger {
                 remaining: r.u64()?,
                 held: r.u128()?,
                 cancelling: r.bool()?,
+                born: r.u64()?,
+                cancel_at: r.u64()?,
             };
             if l.orders.insert(id, o).is_some() {
                 return Err(DecodeError("duplicate order"));
@@ -440,6 +529,23 @@ impl Ledger {
         l.withdrawn = get_map(&mut r)?;
         l.settled_in = get_map(&mut r)?;
         l.settled_out = get_map(&mut r)?;
+        l.adjusted_in = get_map(&mut r)?;
+        l.adjusted_out = get_map(&mut r)?;
+        for _ in 0..r.u32()? {
+            if !l.adjust_ids.insert(r.u64()?) {
+                return Err(DecodeError("duplicate adjust id"));
+            }
+        }
+        for _ in 0..r.u32()? {
+            l.adjust_log.push_back(Adjustment {
+                external_id: r.u64()?,
+                account: r.u64()?,
+                asset: r.u32()?,
+                credit: r.bool()?,
+                amount: r.u128()?,
+                reason: r.u32()?,
+            });
+        }
         r.done()?;
         Ok(l)
     }

@@ -17,6 +17,7 @@ fn cfg(shard: u16) -> Config {
         shard,
         fee_ppm: 0,
         symbols,
+        fees: BTreeMap::new(),
     }
 }
 
@@ -99,6 +100,7 @@ fn settle_cmds_chain_only_this_shards_events_after_the_mark() {
                 sell: 2,
                 price: 5,
                 qty: 1,
+                taker_is_buy: true,
             },
         ),
         (4, closed(1, 3)),

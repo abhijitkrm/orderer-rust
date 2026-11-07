@@ -18,6 +18,7 @@ struct World {
     forwarded: Vec<u64>,
     known_orders: Vec<(u64, u64)>, // (account, order id)
     next_ext: u64,
+    now: u64,
     rng: Rng,
 }
 
@@ -33,6 +34,7 @@ impl World {
             forwarded: vec![0; n],
             known_orders: Vec::new(),
             next_ext: 1,
+            now: 0,
             rng: Rng(seed | 1),
         }
     }
@@ -123,7 +125,7 @@ impl World {
     fn step(&mut self) {
         let account = 1 + self.rng.below(ACCOUNTS);
         let shard = self.shard_of(account);
-        let kind = self.rng.below(20);
+        let kind = self.rng.below(26);
         let r = &mut self.rng;
         match kind {
             0..=2 => {
@@ -215,6 +217,48 @@ impl World {
                     },
                 );
             }
+            20 => {
+                self.now += r.below(5_000);
+                let s = r.below(self.shards.len() as u64) as usize;
+                let jitter = r.below(2_000);
+                self.apply(
+                    s,
+                    Cmd::Clock {
+                        now_ns: self.now.saturating_sub(jitter),
+                    },
+                );
+            }
+            21 => {
+                let s = r.below(self.shards.len() as u64) as usize;
+                let c = Cmd::Sweep {
+                    max_age_ns: r.below(20_000),
+                    retry_ns: r.below(20_000),
+                    max: 1 + r.below(5) as u32,
+                };
+                self.apply(s, c);
+            }
+            22..=23 => {
+                let asset = [BTC, USD, ETH][r.below(3) as usize];
+                let c = Cmd::Adjust {
+                    account,
+                    asset,
+                    amount: 1 + r.below(500) as u128,
+                    credit: r.below(2) == 0,
+                    reason: r.below(5) as u32,
+                    external_id: r.below(60),
+                };
+                self.apply(shard, c);
+            }
+            24 => {
+                let s = r.below(self.shards.len() as u64) as usize;
+                let asset = [BTC, USD, ETH][r.below(3) as usize];
+                let c = Cmd::FeeWithdraw {
+                    asset,
+                    amount: 1 + r.below(300) as u128,
+                    external_id: r.below(40),
+                };
+                self.apply(s, c);
+            }
             _ => {
                 let id = r.below(40);
                 let paid = r.below(2) == 0;
@@ -274,7 +318,11 @@ impl World {
     fn assert_conserved(&self) {
         for asset in [BTC, USD, ETH] {
             let (mut have, mut wd, mut dep, mut inn, mut out) = (0u128, 0u128, 0u128, 0u128, 0u128);
+            let (mut ain, mut aout) = (0u128, 0u128);
             for l in &self.shards {
+                let (ai, ao) = l.adjusted_flow(asset);
+                ain += ai;
+                aout += ao;
                 have += l.holdings(asset);
                 let (d, w) = l.external_net(asset);
                 dep += d;
@@ -287,7 +335,11 @@ impl World {
                 inn, out,
                 "asset {asset}: trades must move exactly what they take"
             );
-            assert_eq!(have + wd, dep, "asset {asset}: money is conserved");
+            assert_eq!(
+                have + wd + aout,
+                dep + ain,
+                "asset {asset}: money is conserved"
+            );
         }
     }
 }
