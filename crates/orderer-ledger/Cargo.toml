@@ -1,0 +1,17 @@
+[package]
+name = "orderer-ledger"
+description = "Balance ledger and pre-trade risk for the orderer exchange: a deterministic, replicated state machine (docs/design/LEDGER-RISK.md)"
+keywords = ["exchange", "ledger", "risk", "matching-engine", "state-machine"]
+categories = ["finance"]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+orderer-cluster = { path = "../orderer-cluster", version = "0.2.1" }
+orderer-consensus = { path = "../orderer-consensus", version = "0.2.1" }
