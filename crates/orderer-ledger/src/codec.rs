@@ -13,8 +13,12 @@
 //!   9 Sweep     max_age_ns u64 | retry_ns u64 | max u32
 //!  10 Adjust    account u64 | asset u32 | credit u8 | amount u128 | reason u32 | external_id u64
 //!  11 FeeWithdraw asset u32 | amount u128 | external_id u64
+//!  12 Lend      account u64 | asset u32 | amount u128            (phase 2)
+//!  13 Recall    account u64 | asset u32 | amount u128            (phase 2)
 //! A trade event (kind 1) ends with `taker_is_buy u8` (changed in step 4; the
-//! other layouts are unchanged).
+//! other layouts are unchanged). Phase 2 adds settle event kinds
+//! 3 SliceIn, 4 SliceOut, 6 Returned (`account u64 | asset u32 | amount u128`)
+//! and 5 SliceFee (`asset u32 | amount u128`).
 
 use crate::ledger::*;
 use orderer_cluster::sha256::sha256;
@@ -156,6 +160,41 @@ pub fn encode_cmd(c: &Cmd) -> Vec<u8> {
                     w.u8(2);
                     w.u64(order);
                 }
+                Event::SliceIn {
+                    account,
+                    asset,
+                    amount,
+                } => {
+                    w.u8(3);
+                    w.u64(account);
+                    w.u32(asset);
+                    w.u128(amount);
+                }
+                Event::SliceOut {
+                    account,
+                    asset,
+                    amount,
+                } => {
+                    w.u8(4);
+                    w.u64(account);
+                    w.u32(asset);
+                    w.u128(amount);
+                }
+                Event::SliceFee { asset, amount } => {
+                    w.u8(5);
+                    w.u32(asset);
+                    w.u128(amount);
+                }
+                Event::Returned {
+                    account,
+                    asset,
+                    amount,
+                } => {
+                    w.u8(6);
+                    w.u64(account);
+                    w.u32(asset);
+                    w.u128(amount);
+                }
             }
         }
         Cmd::Withdraw {
@@ -219,6 +258,26 @@ pub fn encode_cmd(c: &Cmd) -> Vec<u8> {
             w.u128(amount);
             w.u64(external_id);
         }
+        Cmd::Lend {
+            account,
+            asset,
+            amount,
+        } => {
+            w.u8(12);
+            w.u64(account);
+            w.u32(asset);
+            w.u128(amount);
+        }
+        Cmd::Recall {
+            account,
+            asset,
+            amount,
+        } => {
+            w.u8(13);
+            w.u64(account);
+            w.u32(asset);
+            w.u128(amount);
+        }
     }
     w.0
 }
@@ -256,6 +315,25 @@ pub fn decode_cmd(b: &[u8]) -> Result<Cmd, DecodeError> {
                     taker_is_buy: r.bool()?,
                 },
                 2 => Event::Closed { order: r.u64()? },
+                3 => Event::SliceIn {
+                    account: r.u64()?,
+                    asset: r.u32()?,
+                    amount: r.u128()?,
+                },
+                4 => Event::SliceOut {
+                    account: r.u64()?,
+                    asset: r.u32()?,
+                    amount: r.u128()?,
+                },
+                5 => Event::SliceFee {
+                    asset: r.u32()?,
+                    amount: r.u128()?,
+                },
+                6 => Event::Returned {
+                    account: r.u64()?,
+                    asset: r.u32()?,
+                    amount: r.u128()?,
+                },
                 _ => return Err(DecodeError("bad event kind")),
             };
             Cmd::Settle {
@@ -295,13 +373,28 @@ pub fn decode_cmd(b: &[u8]) -> Result<Cmd, DecodeError> {
             amount: r.u128()?,
             external_id: r.u64()?,
         },
+        12 => Cmd::Lend {
+            account: r.u64()?,
+            asset: r.u32()?,
+            amount: r.u128()?,
+        },
+        13 => Cmd::Recall {
+            account: r.u64()?,
+            asset: r.u32()?,
+            amount: r.u128()?,
+        },
         _ => return Err(DecodeError("unknown command")),
     };
     r.done()?;
     Ok(c)
 }
 
+/// Written when the ledger has no phase 2 state: byte-identical to what it was
+/// before phase 2 existed, so old snapshots and digests stay valid.
 const MAGIC: &[u8; 4] = b"LDG2";
+/// Written once phase 2 state exists: `LDG2` plus a trailing slice section
+/// (`lent` entries, then the four flow maps).
+const MAGIC3: &[u8; 4] = b"LDG3";
 
 fn put_map(w: &mut W, m: &BTreeMap<AssetId, Amount>) {
     w.u32(m.len() as u32);
@@ -326,7 +419,8 @@ impl Ledger {
     /// The whole state, canonically ordered, so equal states give equal bytes.
     pub fn snapshot(&self) -> Vec<u8> {
         let mut w = W(Vec::new());
-        w.0.extend_from_slice(MAGIC);
+        let v3 = self.has_slice_state();
+        w.0.extend_from_slice(if v3 { MAGIC3 } else { MAGIC });
         w.u16(self.cfg.shard);
         w.u64(self.next_order);
         w.u64(self.outbox_base);
@@ -374,6 +468,26 @@ impl Ledger {
                     w.u64(order);
                     w.u32(symbol);
                 }
+                OutMsg::Grant {
+                    account,
+                    asset,
+                    amount,
+                } => {
+                    w.u8(3);
+                    w.u64(account);
+                    w.u32(asset);
+                    w.u128(amount);
+                }
+                OutMsg::Recall {
+                    account,
+                    asset,
+                    amount,
+                } => {
+                    w.u8(4);
+                    w.u64(account);
+                    w.u32(asset);
+                    w.u128(amount);
+                }
             }
         }
         w.u32(self.hw.len() as u32);
@@ -418,6 +532,22 @@ impl Ledger {
             w.u128(a.amount);
             w.u32(a.reason);
         }
+        if v3 {
+            w.u32(self.lent.len() as u32);
+            for ((a, asset), v) in &self.lent {
+                w.u64(*a);
+                w.u32(*asset);
+                w.u128(*v);
+            }
+            for m in [
+                &self.lent_granted,
+                &self.lent_returned,
+                &self.slice_in,
+                &self.slice_out,
+            ] {
+                put_map(&mut w, m);
+            }
+        }
         w.0
     }
 
@@ -442,9 +572,11 @@ impl Ledger {
 
     fn parse(cfg: Config, data: &[u8]) -> Result<Ledger, DecodeError> {
         let mut r = R(data);
-        if r.take(4)? != MAGIC {
-            return Err(DecodeError("bad magic"));
-        }
+        let v3 = match r.take(4)? {
+            m if m == MAGIC => false,
+            m if m == MAGIC3 => true,
+            _ => return Err(DecodeError("bad magic")),
+        };
         if r.u16()? != cfg.shard {
             return Err(DecodeError("snapshot is for another shard"));
         }
@@ -493,6 +625,16 @@ impl Ledger {
                 2 => OutMsg::Cancel {
                     order: r.u64()?,
                     symbol: r.u32()?,
+                },
+                3 => OutMsg::Grant {
+                    account: r.u64()?,
+                    asset: r.u32()?,
+                    amount: r.u128()?,
+                },
+                4 => OutMsg::Recall {
+                    account: r.u64()?,
+                    asset: r.u32()?,
+                    amount: r.u128()?,
                 },
                 _ => return Err(DecodeError("bad outbox kind")),
             });
@@ -545,6 +687,22 @@ impl Ledger {
                 amount: r.u128()?,
                 reason: r.u32()?,
             });
+        }
+        if v3 {
+            for _ in 0..r.u32()? {
+                let k = (r.u64()?, r.u32()?);
+                let v = r.u128()?;
+                if v == 0 || l.lent.insert(k, v).is_some() {
+                    return Err(DecodeError("bad lent entry"));
+                }
+            }
+            l.lent_granted = get_map(&mut r)?;
+            l.lent_returned = get_map(&mut r)?;
+            l.slice_in = get_map(&mut r)?;
+            l.slice_out = get_map(&mut r)?;
+            if !l.has_slice_state() {
+                return Err(DecodeError("empty slice section"));
+            }
         }
         r.done()?;
         Ok(l)

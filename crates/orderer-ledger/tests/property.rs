@@ -57,6 +57,7 @@ impl World {
             let ids: Vec<u64> = match ev {
                 Event::Trade { buy, sell, .. } => vec![buy, sell],
                 Event::Closed { order } => vec![order],
+                _ => vec![],
             };
             let mut shards: Vec<usize> = ids.iter().map(|i| order_shard(*i) as usize).collect();
             shards.sort();

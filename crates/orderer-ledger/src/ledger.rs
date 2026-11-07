@@ -17,6 +17,16 @@ pub fn order_shard(id: OrderId) -> u16 {
     (id >> SHARD_SHIFT) as u16
 }
 
+/// Ledger shard numbers are below this. Orders entered through a credit slice
+/// (phase 2) are numbered by their matching group with this bit set in the shard
+/// field, so no ledger shard ever mistakes one for its own order.
+pub const SLICE_SHARD_BIT: u16 = 0x8000;
+
+/// True for an order id assigned by a matching group's credit slice.
+pub fn is_slice_order(id: OrderId) -> bool {
+    order_shard(id) & SLICE_SHARD_BIT != 0
+}
+
 const PPM: u128 = 1_000_000;
 
 /// The system account that fees accrue to; no user command may name it.
@@ -98,6 +108,30 @@ pub enum Event {
     Closed {
         order: OrderId,
     },
+    /// Phase 2, from a matching group's credit slice (`CREDIT-SLICES.md`): the
+    /// account's money in the slice grew by `amount` (trade proceeds, net of fee).
+    SliceIn {
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
+    },
+    /// The account's money in the slice shrank by `amount` (trades paid).
+    SliceOut {
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
+    },
+    /// Fees the slice charged, to be booked in this shard's fee pool.
+    SliceFee {
+        asset: AssetId,
+        amount: Amount,
+    },
+    /// The slice handed back `amount` of uncommitted credit (answer to a recall).
+    Returned {
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -177,6 +211,21 @@ pub enum Cmd {
         amount: Amount,
         external_id: u64,
     },
+    /// Phase 2: lend `amount` of the account's available balance to the matching
+    /// group as a credit slice (a `Grant` goes out through the outbox).
+    Lend {
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
+    },
+    /// Phase 2: ask the group to give back up to `amount` of the account's
+    /// uncommitted slice. The funds return as a `Returned` event; a withdrawal
+    /// can only draw on `available`, never on lent funds.
+    Recall {
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
+    },
 }
 
 /// One entry of the adjustment audit ring.
@@ -204,6 +253,18 @@ pub enum OutMsg {
     Cancel {
         order: OrderId,
         symbol: SymbolId,
+    },
+    /// Phase 2: `credit += amount` for the account in the group's slice.
+    Grant {
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
+    },
+    /// Phase 2: return up to `amount` of the account's uncommitted credit.
+    Recall {
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
     },
 }
 
@@ -249,6 +310,13 @@ pub enum Outcome {
         queued: u32,
     },
     Adjusted,
+    /// Funds lent to the group; the `Grant` is at this outbox index.
+    Lent {
+        outbox: u64,
+    },
+    RecallQueued {
+        outbox: u64,
+    },
     Rejected(Reject),
     /// The command could not be applied consistently (a matching event that
     /// contradicts ledger state, or an undecodable entry). Nothing changed
@@ -278,6 +346,12 @@ pub struct Ledger {
     pub(crate) adjusted_in: BTreeMap<AssetId, Amount>,
     pub(crate) adjusted_out: BTreeMap<AssetId, Amount>,
     pub(crate) adjust_log: VecDeque<Adjustment>,
+    /// Phase 2: what each account has lent to the group, by asset.
+    pub(crate) lent: BTreeMap<(AccountId, AssetId), Amount>,
+    pub(crate) lent_granted: BTreeMap<AssetId, Amount>,
+    pub(crate) lent_returned: BTreeMap<AssetId, Amount>,
+    pub(crate) slice_in: BTreeMap<AssetId, Amount>,
+    pub(crate) slice_out: BTreeMap<AssetId, Amount>,
 }
 
 fn bump(map: &mut BTreeMap<AssetId, Amount>, asset: AssetId, by: Amount) {
@@ -315,6 +389,11 @@ impl Ledger {
             adjusted_in: BTreeMap::new(),
             adjusted_out: BTreeMap::new(),
             adjust_log: VecDeque::new(),
+            lent: BTreeMap::new(),
+            lent_granted: BTreeMap::new(),
+            lent_returned: BTreeMap::new(),
+            slice_in: BTreeMap::new(),
+            slice_out: BTreeMap::new(),
         }
     }
 
@@ -379,10 +458,87 @@ impl Ledger {
             self.settled_out.get(&asset).copied().unwrap_or(0),
         )
     }
-    /// Everything this shard holds of `asset`: balances, fees and funds in
-    /// pending withdrawals.
+    /// What `account` has lent to the matching group, of `asset`.
+    pub fn lent(&self, account: AccountId, asset: AssetId) -> Amount {
+        self.lent.get(&(account, asset)).copied().unwrap_or(0)
+    }
+    /// Everything lent of `asset` on this shard.
+    pub fn lent_total(&self, asset: AssetId) -> Amount {
+        self.lent
+            .iter()
+            .filter(|((_, a), _)| *a == asset)
+            .map(|(_, v)| *v)
+            .sum()
+    }
+    /// Phase 2 flows of `asset`: `(granted, returned, slice_in, slice_out)`.
+    /// Locally, `lent_total + returned + out == granted + in` always holds.
+    pub fn slice_flow(&self, asset: AssetId) -> (Amount, Amount, Amount, Amount) {
+        let g = |m: &BTreeMap<AssetId, Amount>| m.get(&asset).copied().unwrap_or(0);
+        (
+            g(&self.lent_granted),
+            g(&self.lent_returned),
+            g(&self.slice_in),
+            g(&self.slice_out),
+        )
+    }
+    /// True once any phase 2 state exists (decides the snapshot format).
+    pub(crate) fn has_slice_state(&self) -> bool {
+        !(self.lent.is_empty()
+            && self.lent_granted.is_empty()
+            && self.lent_returned.is_empty()
+            && self.slice_in.is_empty()
+            && self.slice_out.is_empty())
+    }
+    pub(crate) fn is_local(&self, id: OrderId) -> bool {
+        self.local(id)
+    }
+    /// Slice engine: money delivered to the group (a `Grant` applied).
+    pub(crate) fn slice_credit(&mut self, account: AccountId, asset: AssetId, amount: Amount) {
+        let b = self.bal(account, asset);
+        b.available = b.available.saturating_add(amount);
+        bump(&mut self.deposited, asset, amount);
+    }
+    /// Slice engine: take back up to `amount` of uncommitted money.
+    pub(crate) fn slice_take(
+        &mut self,
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
+    ) -> Amount {
+        let take = self.balance(account, asset).available.min(amount);
+        if take > 0 {
+            self.bal(account, asset).available -= take;
+            bump(&mut self.withdrawn, asset, take);
+        }
+        take
+    }
+    fn add_lent(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> bool {
+        let e = self.lent.entry((account, asset)).or_insert(0);
+        match e.checked_add(amount) {
+            Some(v) => {
+                *e = v;
+                true
+            }
+            None => false,
+        }
+    }
+    fn sub_lent(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> bool {
+        let have = self.lent(account, asset);
+        if have < amount {
+            return false;
+        }
+        if have == amount {
+            self.lent.remove(&(account, asset));
+        } else {
+            self.lent.insert((account, asset), have - amount);
+        }
+        true
+    }
+
+    /// Everything this shard holds of `asset`: balances, fees, funds in
+    /// pending withdrawals and funds lent to the matching group.
     pub fn holdings(&self, asset: AssetId) -> Amount {
-        let mut t: Amount = self.fees(asset);
+        let mut t: Amount = self.fees(asset) + self.lent_total(asset);
         for ((_, a), b) in &self.balances {
             if *a == asset {
                 t += b.available + b.held;
@@ -407,6 +563,8 @@ impl Ledger {
             | Cmd::Reserve { account, .. }
             | Cmd::Withdraw { account, .. }
             | Cmd::Adjust { account, .. }
+            | Cmd::Lend { account, .. }
+            | Cmd::Recall { account, .. }
                 if account == FEE_ACCOUNT =>
             {
                 Outcome::Rejected(Reject::ReservedAccount)
@@ -468,7 +626,59 @@ impl Ledger {
                 amount,
                 external_id,
             } => self.fee_withdraw(asset, amount, external_id),
+            Cmd::Lend {
+                account,
+                asset,
+                amount,
+            } => self.lend(account, asset, amount),
+            Cmd::Recall {
+                account,
+                asset,
+                amount,
+            } => self.recall(account, asset, amount),
         }
+    }
+
+    fn lend(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> Outcome {
+        if amount == 0 {
+            return Outcome::Rejected(Reject::BadAmount);
+        }
+        if self.balance(account, asset).available < amount {
+            return Outcome::Rejected(Reject::Insufficient);
+        }
+        let granted = self.lent_granted.get(&asset).copied().unwrap_or(0);
+        if self.lent(account, asset).checked_add(amount).is_none()
+            || granted.checked_add(amount).is_none()
+        {
+            return Outcome::Rejected(Reject::Overflow);
+        }
+        self.bal(account, asset).available -= amount;
+        self.add_lent(account, asset, amount);
+        bump(&mut self.lent_granted, asset, amount);
+        let outbox = self.outbox_next();
+        self.outbox.push_back(OutMsg::Grant {
+            account,
+            asset,
+            amount,
+        });
+        Outcome::Lent { outbox }
+    }
+
+    fn recall(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> Outcome {
+        if amount == 0 {
+            return Outcome::Rejected(Reject::BadAmount);
+        }
+        let lent = self.lent(account, asset);
+        if lent == 0 {
+            return Outcome::Rejected(Reject::Insufficient);
+        }
+        let outbox = self.outbox_next();
+        self.outbox.push_back(OutMsg::Recall {
+            account,
+            asset,
+            amount: amount.min(lent),
+        });
+        Outcome::RecallQueued { outbox }
     }
 
     fn sweep(&mut self, max_age_ns: u64, retry_ns: u64, max: u32) -> Outcome {
@@ -732,6 +942,26 @@ impl Ledger {
                 taker_is_buy,
             } => self.settle_trade(buy, sell, price, qty, taker_is_buy),
             Event::Closed { order } => self.settle_closed(order),
+            Event::SliceIn {
+                account,
+                asset,
+                amount,
+            } => self.settle_slice_in(account, asset, amount),
+            Event::SliceOut {
+                account,
+                asset,
+                amount,
+            } => self.settle_slice_out(account, asset, amount),
+            Event::SliceFee { asset, amount } => {
+                bump(&mut self.fees, asset, amount);
+                bump(&mut self.settled_in, asset, amount);
+                amount > 0
+            }
+            Event::Returned {
+                account,
+                asset,
+                amount,
+            } => self.settle_returned(account, asset, amount),
         };
         // The mark advances even for an anomaly: a replay must not retry it.
         self.hw.insert(source, idx);
@@ -741,6 +971,33 @@ impl Ledger {
             self.anomalies += 1;
             Outcome::Anomaly
         }
+    }
+
+    fn settle_slice_in(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> bool {
+        if amount == 0 || account == FEE_ACCOUNT || !self.add_lent(account, asset, amount) {
+            return false;
+        }
+        bump(&mut self.slice_in, asset, amount);
+        bump(&mut self.settled_in, asset, amount);
+        true
+    }
+
+    fn settle_slice_out(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> bool {
+        if amount == 0 || !self.sub_lent(account, asset, amount) {
+            return false;
+        }
+        bump(&mut self.slice_out, asset, amount);
+        bump(&mut self.settled_out, asset, amount);
+        true
+    }
+
+    fn settle_returned(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> bool {
+        if amount == 0 || !self.sub_lent(account, asset, amount) {
+            return false;
+        }
+        self.bal(account, asset).available += amount;
+        bump(&mut self.lent_returned, asset, amount);
+        true
     }
 
     fn settle_closed(&mut self, id: OrderId) -> bool {
@@ -926,7 +1183,16 @@ impl Ledger {
         assets.extend(self.adjusted_in.keys());
         assets.extend(self.adjusted_out.keys());
         assets.extend(self.fees.keys());
+        assets.extend(self.lent.keys().map(|k| k.1));
+        assets.extend(self.lent_granted.keys());
         for a in assets {
+            let (granted, returned, sin, sout) = self.slice_flow(a);
+            if self.lent_total(a) + returned + sout != granted + sin {
+                return Err(format!(
+                    "asset {a}: lent {} + returned {returned} + slice out {sout} != granted {granted} + slice in {sin}",
+                    self.lent_total(a)
+                ));
+            }
             let (dep, wd) = self.external_net(a);
             let (inn, out) = self.settled_flow(a);
             let (ain, aout) = self.adjusted_flow(a);

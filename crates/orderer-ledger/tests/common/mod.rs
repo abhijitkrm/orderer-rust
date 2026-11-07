@@ -152,6 +152,8 @@ impl Matcher {
                 qty,
             } => self.submit(order, symbol, side, price, qty),
             OutMsg::Cancel { order, symbol } => self.cancel(order, symbol),
+            // phase 2 messages concern the credit slice, not the books
+            OutMsg::Grant { .. } | OutMsg::Recall { .. } => {}
         }
         a
     }

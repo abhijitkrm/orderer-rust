@@ -109,6 +109,26 @@ fn put_msg(out: &mut Vec<u8>, m: &OutMsg) {
             out.extend_from_slice(&0u64.to_le_bytes());
             out.extend_from_slice(&0u64.to_le_bytes());
         }
+        // Phase 2 (CREDIT-SLICES.md): same 30 bytes, the account in the order field,
+        // the asset in the symbol field and the 128-bit amount split over the
+        // price (low half) and qty (high half) fields.
+        OutMsg::Grant {
+            account,
+            asset,
+            amount,
+        }
+        | OutMsg::Recall {
+            account,
+            asset,
+            amount,
+        } => {
+            out.push(if matches!(m, OutMsg::Grant { .. }) { 3 } else { 4 });
+            out.extend_from_slice(&account.to_le_bytes());
+            out.extend_from_slice(&asset.to_le_bytes());
+            out.push(0);
+            out.extend_from_slice(&(amount as u64).to_le_bytes());
+            out.extend_from_slice(&((amount >> 64) as u64).to_le_bytes());
+        }
     }
 }
 
@@ -127,6 +147,24 @@ fn get_msg(r: &mut Rd) -> Result<OutMsg, WireError> {
         }),
         2 if side == Side::Buy && price == 0 && qty == 0 => Ok(OutMsg::Cancel { order, symbol }),
         2 => Err(WireError("non-canonical cancel")),
+        3 | 4 if side == Side::Buy => {
+            let (account, asset) = (order, symbol);
+            let amount = price as u128 | (qty as u128) << 64;
+            Ok(if kind == 3 {
+                OutMsg::Grant {
+                    account,
+                    asset,
+                    amount,
+                }
+            } else {
+                OutMsg::Recall {
+                    account,
+                    asset,
+                    amount,
+                }
+            })
+        }
+        3 | 4 => Err(WireError("non-canonical credit message")),
         _ => Err(WireError("bad message kind")),
     }
 }
@@ -167,8 +205,9 @@ pub fn decode_forward(b: &[u8]) -> Result<Forward, WireError> {
     })
 }
 
-/// A settlement event: `1 trade (buy u64, sell u64, price u64, qty u64, taker_is_buy u8)` or
-/// `2 closed (order u64)`.
+/// A settlement event: `1 trade (buy u64, sell u64, price u64, qty u64, taker_is_buy u8)`,
+/// `2 closed (order u64)`, or the phase 2 kinds `3 slice-in`, `4 slice-out`, `6 returned`
+/// (`account u64, asset u32, amount u128`) and `5 slice-fee (asset u32, amount u128)`.
 pub fn put_event(out: &mut Vec<u8>, e: &Event) {
     match *e {
         Event::Trade {
@@ -188,7 +227,38 @@ pub fn put_event(out: &mut Vec<u8>, e: &Event) {
             out.push(2);
             out.extend_from_slice(&order.to_le_bytes());
         }
+        Event::SliceIn {
+            account,
+            asset,
+            amount,
+        } => put_account_event(out, 3, account, asset, amount),
+        Event::SliceOut {
+            account,
+            asset,
+            amount,
+        } => put_account_event(out, 4, account, asset, amount),
+        Event::SliceFee { asset, amount } => {
+            out.push(5);
+            out.extend_from_slice(&asset.to_le_bytes());
+            out.extend_from_slice(&amount.to_le_bytes());
+        }
+        Event::Returned {
+            account,
+            asset,
+            amount,
+        } => put_account_event(out, 6, account, asset, amount),
     }
+}
+
+fn put_account_event(out: &mut Vec<u8>, kind: u8, account: u64, asset: u32, amount: u128) {
+    out.push(kind);
+    out.extend_from_slice(&account.to_le_bytes());
+    out.extend_from_slice(&asset.to_le_bytes());
+    out.extend_from_slice(&amount.to_le_bytes());
+}
+
+fn get_u128(r: &mut Rd) -> Result<u128, WireError> {
+    Ok(u128::from_le_bytes(r.take(16)?.try_into().unwrap()))
 }
 
 pub fn get_event(r: &mut Rd) -> Result<Event, WireError> {
@@ -209,6 +279,25 @@ pub fn get_event(r: &mut Rd) -> Result<Event, WireError> {
             })
         }
         2 => Ok(Event::Closed { order: r.u64()? }),
+        3 => Ok(Event::SliceIn {
+            account: r.u64()?,
+            asset: r.u32()?,
+            amount: get_u128(r)?,
+        }),
+        4 => Ok(Event::SliceOut {
+            account: r.u64()?,
+            asset: r.u32()?,
+            amount: get_u128(r)?,
+        }),
+        5 => Ok(Event::SliceFee {
+            asset: r.u32()?,
+            amount: get_u128(r)?,
+        }),
+        6 => Ok(Event::Returned {
+            account: r.u64()?,
+            asset: r.u32()?,
+            amount: get_u128(r)?,
+        }),
         _ => Err(WireError("bad event kind")),
     }
 }

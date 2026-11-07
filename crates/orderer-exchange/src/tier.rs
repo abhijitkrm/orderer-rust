@@ -190,6 +190,8 @@ impl<C: MatchingCore> MatchingTierSm<C> {
                     OutMsg::Cancel { order, symbol } => {
                         cmds.push((symbol, Command::Cancel { order_id: order }));
                     }
+                    // Credit slices (phase 2) are handled in credit mode only.
+                    OutMsg::Grant { .. } | OutMsg::Recall { .. } => {}
                 }
             }
         }

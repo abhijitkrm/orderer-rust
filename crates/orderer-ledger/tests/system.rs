@@ -127,6 +127,7 @@ impl Sys {
                     order_shard(buy) as usize == shard || order_shard(sell) as usize == shard
                 }
                 Event::Closed { order } => order_shard(order) as usize == shard,
+                _ => false,
             })
             .collect()
     }

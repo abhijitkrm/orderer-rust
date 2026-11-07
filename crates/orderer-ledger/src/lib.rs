@@ -14,12 +14,15 @@
 mod codec;
 mod flow;
 mod ledger;
+mod slice;
 mod sm;
 
 pub use codec::{decode_cmd, encode_cmd, DecodeError};
-pub use flow::{settle_cmds, Accept, Forwarder, Intake, Send};
+pub use flow::{settle_cmds, settle_cmds_routed, Accept, Forwarder, Intake, Send};
 pub use ledger::{
-    order_shard, Adjustment, Amount, AssetId, Balance, Cmd, Config, Event, Ledger, Order, OrderId,
-    OutMsg, Outcome, Reject, Side, Symbol, SymbolId, ADJUST_LOG, FEE_ACCOUNT, SHARD_SHIFT,
+    is_slice_order, order_shard, Adjustment, Amount, AssetId, Balance, Cmd, Config, Event, Ledger,
+    Order, OrderId, OutMsg, Outcome, Reject, Side, Symbol, SymbolId, ADJUST_LOG, FEE_ACCOUNT,
+    SHARD_SHIFT, SLICE_SHARD_BIT,
 };
+pub use slice::Slice;
 pub use sm::LedgerSm;

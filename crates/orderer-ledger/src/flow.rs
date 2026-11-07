@@ -13,7 +13,7 @@
 //!   `prev` and the ledger applies it only on a match (see `Cmd::Settle`).
 //!   [`settle_cmds`] derives the chain from the event stream and the shard's mark.
 
-use crate::ledger::{order_shard, Cmd, Event, Ledger, OutMsg};
+use crate::ledger::{order_shard, AccountId, Cmd, Event, Ledger, OutMsg};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +122,23 @@ fn involves(shard: u16, e: &Event) -> bool {
     match *e {
         Event::Trade { buy, sell, .. } => order_shard(buy) == shard || order_shard(sell) == shard,
         Event::Closed { order } => order_shard(order) == shard,
+        // Phase 2 events are routed by account, not by order id: see `settle_cmds_routed`.
+        _ => false,
+    }
+}
+
+fn involves_routed(
+    shard: u16,
+    e: &Event,
+    shard_of: &impl Fn(AccountId) -> u16,
+    fee_shard: u16,
+) -> bool {
+    match *e {
+        Event::SliceIn { account, .. }
+        | Event::SliceOut { account, .. }
+        | Event::Returned { account, .. } => shard_of(account) == shard,
+        Event::SliceFee { .. } => shard == fee_shard,
+        _ => involves(shard, e),
     }
 }
 
@@ -143,6 +160,38 @@ pub fn settle_cmds(
             break;
         }
         if idx > hw && involves(shard, &event) {
+            out.push(Cmd::Settle {
+                source,
+                prev,
+                idx,
+                event,
+            });
+            prev = idx;
+        }
+    }
+    out
+}
+
+/// Like [`settle_cmds`], for a stream that also carries phase 2 events. Those
+/// name an account, not an order, so the caller says which shard owns an account
+/// (`shard_of`, the same function the gateway uses) and which shard books slice
+/// fees (`fee_shard`).
+pub fn settle_cmds_routed(
+    source: u32,
+    shard: u16,
+    hw: u64,
+    events: impl IntoIterator<Item = (u64, Event)>,
+    max: usize,
+    shard_of: impl Fn(AccountId) -> u16,
+    fee_shard: u16,
+) -> Vec<Cmd> {
+    let mut prev = hw;
+    let mut out = Vec::new();
+    for (idx, event) in events {
+        if out.len() >= max {
+            break;
+        }
+        if idx > hw && involves_routed(shard, &event, &shard_of, fee_shard) {
             out.push(Cmd::Settle {
                 source,
                 prev,
