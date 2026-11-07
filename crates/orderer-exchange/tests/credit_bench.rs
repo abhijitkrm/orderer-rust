@@ -123,11 +123,11 @@ fn phase1(partitions: u32, batch: usize) -> (f64, f64) {
     let mut sm = tier(partitions, None);
     let orders = orders();
     let mut idx = 0u64;
-    let mut sent = 0u64;
     let t0 = Instant::now();
     let mut pending: Vec<OutMsg> = Vec::new();
     let mut first = 0u64;
-    for o in &orders {
+    for (i, o) in orders.iter().enumerate() {
+        let sent = i as u64 + 1;
         let r = ledger.apply(&Cmd::Reserve {
             account: o.account,
             symbol: o.symbol,
@@ -140,10 +140,9 @@ fn phase1(partitions: u32, batch: usize) -> (f64, f64) {
         let all: Vec<OutMsg> = it.copied().collect();
         let _ = base;
         if pending.is_empty() {
-            first = sent;
+            first = sent - 1;
         }
         pending.push(*all.last().unwrap());
-        sent += 1;
         if pending.len() >= batch {
             idx += 1;
             let data = encode_forward(&Forward {
