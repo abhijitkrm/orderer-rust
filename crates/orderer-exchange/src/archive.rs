@@ -244,6 +244,7 @@ pub struct TierView {
     pub(crate) archive: Arc<Shared>,
     pub(crate) intake: Arc<Mutex<crate::tier::TierIntake>>,
     pub(crate) source_base: u32,
+    pub(crate) credit: crate::tier::credit::SharedCredit,
 }
 
 impl TierView {
@@ -262,8 +263,41 @@ impl TierView {
         self.intake.lock().expect("intake lock").cursor(shard)
     }
 
+    /// The source id of the group stream (slice reports), in credit mode.
+    pub fn group_source(&self) -> Option<u32> {
+        let parts = self.partitions();
+        self.credit
+            .lock()
+            .expect("credit lock")
+            .as_ref()
+            .map(|_| self.source_base + parts)
+    }
+
+    /// The answer to a gateway's last credit-slice request (`client`): its
+    /// sequence number and the order id or the reason it was refused.
+    pub fn slice_result(&self, client: u64) -> Option<(u64, Result<u64, orderer_ledger::Reject>)> {
+        let c = self.credit.lock().expect("credit lock");
+        c.as_ref()?.clients.get(&client).copied()
+    }
+
+    /// Run `f` on the credit slice (inspection in tests and audits).
+    pub fn with_slice<R>(&self, f: impl FnOnce(&orderer_ledger::Slice) -> R) -> Option<R> {
+        let c = self.credit.lock().expect("credit lock");
+        c.as_ref().map(|c| f(&c.slice))
+    }
+
     /// Index of the last event of stream `source` (0 when empty).
     pub fn end(&self, source: u32) -> Option<u64> {
+        if let Some(g) = self.group_source() {
+            if source == g {
+                return self
+                    .credit
+                    .lock()
+                    .expect("credit lock")
+                    .as_ref()
+                    .map(|c| c.end());
+            }
+        }
         let a = self.archive.lock().expect("archive lock");
         let p = a
             .parts
@@ -279,6 +313,14 @@ impl TierView {
         from: u64,
         max: usize,
     ) -> Option<Result<Vec<(u64, Event)>, Truncated>> {
+        if let Some(g) = self.group_source() {
+            if source == g {
+                let c = self.credit.lock().expect("credit lock");
+                return c
+                    .as_ref()
+                    .map(|c| c.read(from, max).map_err(|base| Truncated { base }));
+            }
+        }
         let a = self.archive.lock().expect("archive lock");
         let p = a
             .parts

@@ -122,7 +122,11 @@ fn put_msg(out: &mut Vec<u8>, m: &OutMsg) {
             asset,
             amount,
         } => {
-            out.push(if matches!(m, OutMsg::Grant { .. }) { 3 } else { 4 });
+            out.push(if matches!(m, OutMsg::Grant { .. }) {
+                3
+            } else {
+                4
+            });
             out.extend_from_slice(&account.to_le_bytes());
             out.extend_from_slice(&asset.to_le_bytes());
             out.push(0);
@@ -300,4 +304,97 @@ pub fn get_event(r: &mut Rd) -> Result<Event, WireError> {
         }),
         _ => Err(WireError("bad event kind")),
     }
+}
+
+/// **Entry tag 6, credit-slice request** (a gateway talking to a matching group in
+/// credit mode, `CREDIT-SLICES.md`; one request per entry):
+/// ```text
+///   0   u8   6
+///   1   u8   version (1)
+///   2   u64  client id        (a gateway's session)
+///   10  u64  sequence         (stop-and-wait; a retry repeats it)
+///   18  u8   kind: 1 enter, 2 cancel
+///   19  u64  account
+///   enter:  u32 symbol | u8 side (0 buy, 1 sell) | u64 price | u64 qty
+///   cancel: u64 order
+/// ```
+/// An entered order is a GTC limit order; the group assigns its id and answers
+/// through `TierView::slice_result`.
+pub const TAG_SLICE: u8 = 6;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SliceBody {
+    Enter {
+        account: u64,
+        symbol: u32,
+        side: Side,
+        price: u64,
+        qty: u64,
+    },
+    Cancel {
+        account: u64,
+        order: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SliceReq {
+    pub client: u64,
+    pub seq: u64,
+    pub body: SliceBody,
+}
+
+pub fn encode_slice_req(q: &SliceReq) -> Vec<u8> {
+    let mut out = vec![TAG_SLICE, 1];
+    out.extend_from_slice(&q.client.to_le_bytes());
+    out.extend_from_slice(&q.seq.to_le_bytes());
+    match q.body {
+        SliceBody::Enter {
+            account,
+            symbol,
+            side,
+            price,
+            qty,
+        } => {
+            out.push(1);
+            out.extend_from_slice(&account.to_le_bytes());
+            out.extend_from_slice(&symbol.to_le_bytes());
+            put_side(&mut out, side);
+            out.extend_from_slice(&price.to_le_bytes());
+            out.extend_from_slice(&qty.to_le_bytes());
+        }
+        SliceBody::Cancel { account, order } => {
+            out.push(2);
+            out.extend_from_slice(&account.to_le_bytes());
+            out.extend_from_slice(&order.to_le_bytes());
+        }
+    }
+    out
+}
+
+pub fn decode_slice_req(b: &[u8]) -> Result<SliceReq, WireError> {
+    let mut r = Rd::new(b);
+    if r.u8()? != TAG_SLICE {
+        return Err(WireError("not a slice request"));
+    }
+    if r.u8()? != 1 {
+        return Err(WireError("unknown version"));
+    }
+    let (client, seq) = (r.u64()?, r.u64()?);
+    let body = match r.u8()? {
+        1 => SliceBody::Enter {
+            account: r.u64()?,
+            symbol: r.u32()?,
+            side: get_side(&mut r)?,
+            price: r.u64()?,
+            qty: r.u64()?,
+        },
+        2 => SliceBody::Cancel {
+            account: r.u64()?,
+            order: r.u64()?,
+        },
+        _ => return Err(WireError("bad request kind")),
+    };
+    r.done()?;
+    Ok(SliceReq { client, seq, body })
 }
