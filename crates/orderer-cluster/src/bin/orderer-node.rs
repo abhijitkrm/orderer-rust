@@ -166,11 +166,12 @@ fn main() {
         "pipeline" => Box::new(PipelineSm::<FifoCore>::new(
             BookConfig::default(),
             PartitionMap::hash(partitions).unwrap_or_else(|e| die(&e.to_string())),
-            move |init| {
+            move |init, digest| {
                 let (c, _h) = Metrics::new(0);
                 let mut b = Pipeline::<FifoCore>::builder()
                     .partitions(partitions)
                     .egress(c)
+                    .egress(digest)
                     .timestamps(false);
                 if let Some(i) = init {
                     b = b.initial(i);

@@ -37,6 +37,11 @@ pub trait StateMachine: Send + 'static {
     fn digest(&mut self, _index: Index) -> Option<[u8; 32]> {
         None
     }
+    /// A digest of the whole state, however expensive, for on-demand checks
+    /// (the client protocol's state hash). Defaults to [`StateMachine::digest`].
+    fn deep_digest(&mut self, index: Index) -> Option<[u8; 32]> {
+        self.digest(index)
+    }
 }
 
 impl StateMachine for Box<dyn StateMachine> {
@@ -48,6 +53,9 @@ impl StateMachine for Box<dyn StateMachine> {
     }
     fn restore(&mut self, index: Index, data: &[u8]) -> Result<(), String> {
         (**self).restore(index, data)
+    }
+    fn deep_digest(&mut self, index: Index) -> Option<[u8; 32]> {
+        (**self).deep_digest(index)
     }
     fn digest(&mut self, index: Index) -> Option<[u8; 32]> {
         (**self).digest(index)
@@ -631,7 +639,7 @@ fn applier_thread<S: StateMachine>(
             }
             Job::Hash(reply) => {
                 let at = applied.load(Ordering::Acquire);
-                let _ = reply.send(sm.digest(at).map(|d| (at, d)));
+                let _ = reply.send(sm.deep_digest(at).map(|d| (at, d)));
             }
             Job::Stop => break,
         }

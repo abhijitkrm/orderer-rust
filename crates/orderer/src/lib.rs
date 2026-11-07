@@ -44,8 +44,8 @@ pub mod stats;
 mod writer;
 
 pub use egress::{
-    Acks, Callback, Collect, CollectHandle, Egress, EgressCtx, EgressFactory, Metrics,
-    MetricsHandle, PartitionMetrics,
+    chain_event, chain_step, Acks, Callback, Collect, CollectHandle, Egress, EgressCtx,
+    EgressFactory, EventDigest, EventDigestHandle, Metrics, MetricsHandle, PartitionMetrics,
 };
 pub use journal::{FsyncPolicy, JournalConfig, JournalFormat};
 pub use msg::{Body, CmdMsg, Control, EvtBody, EvtMsg};

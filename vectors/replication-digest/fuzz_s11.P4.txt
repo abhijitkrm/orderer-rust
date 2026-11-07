@@ -1,0 +1,5 @@
+orderer-evdigest/1
+partitions 4
+commands 3000
+chains 70a2dc0af9ff4d7a be1965105a24ef2b 0eb61e5f8336f5b2 486006c183bd6895
+digest 01015631c1a4e311801717f48b4c9f976ba1d3b0712528ce8a9ee4b4cdc2ef39

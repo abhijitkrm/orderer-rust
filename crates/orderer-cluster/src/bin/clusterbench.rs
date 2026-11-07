@@ -177,12 +177,13 @@ fn main() {
                     PipelineSm::<FifoCore>::new(
                         BookConfig::default(),
                         PartitionMap::hash(partitions).unwrap(),
-                        move |init| {
+                        move |init, digest| {
                             // Counting egress: nothing accumulates in memory.
                             let (c, _h) = Metrics::new(0);
                             let mut b = Pipeline::<FifoCore>::builder()
                                 .partitions(partitions)
                                 .egress(c)
+                                .egress(digest)
                                 .timestamps(false);
                             if let Some(i) = init {
                                 b = b.initial(i);

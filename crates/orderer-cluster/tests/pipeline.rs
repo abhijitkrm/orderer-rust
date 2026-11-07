@@ -6,7 +6,7 @@
 mod common;
 
 use common::{free_addrs, temp};
-use orderer::{Collect, CollectHandle, Initial, PartitionMap, Pipeline};
+use orderer::{Collect, CollectHandle, EventDigest, Initial, PartitionMap, Pipeline};
 use orderer_cluster::pipeline_sm::{PipelineSm, Tap};
 use orderer_cluster::sha256::sha256;
 use orderer_cluster::{ProposeError, Replica, ReplicaConfig, ReplicaHandle};
@@ -83,10 +83,15 @@ impl Gen {
     }
 }
 
-fn build(collect: Collect, init: Option<Initial<FifoCore>>) -> Pipeline<FifoCore> {
+fn build(
+    collect: Collect,
+    digest: EventDigest,
+    init: Option<Initial<FifoCore>>,
+) -> Pipeline<FifoCore> {
     let mut b = Pipeline::<FifoCore>::builder()
         .partitions(PARTITIONS)
-        .egress(collect);
+        .egress(collect)
+        .egress(digest);
     if let Some(i) = init {
         b = b.initial(i);
     }
@@ -96,7 +101,8 @@ fn build(collect: Collect, init: Option<Initial<FifoCore>>) -> Pipeline<FifoCore
 /// What a plain pipeline produces for `cmds`: (event listing, state digest).
 fn reference(cmds: &[(Symbol, Command)]) -> (Vec<u8>, [u8; 32]) {
     let (c, h) = Collect::new(false);
-    let p = build(c, None);
+    let (d, _) = EventDigest::new(PARTITIONS, &[]);
+    let p = build(c, d, None);
     p.publish_batch(cmds).unwrap();
     p.drain().unwrap();
     let snap = p.snapshot().unwrap();
@@ -165,10 +171,10 @@ impl World {
         let sm = PipelineSm::<FifoCore>::new(
             BookConfig::default(),
             PartitionMap::hash(PARTITIONS).unwrap(),
-            move |init| {
+            move |init, digest| {
                 let (c, h) = Collect::new(false);
                 *collect_slot.lock().unwrap() = Some(h);
-                build(c, init)
+                build(c, digest, init)
             },
         )
         .with_tap(node.tap.clone());

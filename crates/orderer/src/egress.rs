@@ -374,3 +374,163 @@ impl Egress for MetricsEgress {
 pub fn event_key(m: &EvtMsg) -> (Symbol, u64) {
     (m.symbol, m.seq)
 }
+
+// ---- EventDigest: a rolling hash of each partition's event stream -------
+
+/// One step of the event-chain hash: `rotl((h ^ x) * K, 31)`. Pinned exactly
+/// (spec/REPLICATION.md 13.16), because replicas of different languages
+/// compare these values.
+#[inline]
+pub fn chain_step(h: u64, x: u64) -> u64 {
+    (h ^ x).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(31)
+}
+
+/// Fold one event into a chain: the causing command's `iseq`, the symbol and
+/// the event kind, the per-book sequence, then the kind's fields. Reasons are
+/// coded explicitly (not by enum order), and signed prices as their two's
+/// complement `u64`.
+#[inline]
+pub fn chain_event(mut h: u64, m: &EvtMsg) -> u64 {
+    use orderer_core::{CloseReason, RejectReason};
+    let ev = event(m);
+    let kind: u64 = match ev {
+        Event::Accepted { .. } => 1,
+        Event::Rejected { .. } => 2,
+        Event::Trade { .. } => 3,
+        Event::Closed { .. } => 4,
+        Event::Replaced { .. } => 5,
+    };
+    h = chain_step(h, m.iseq);
+    h = chain_step(h, (u64::from(m.symbol) << 8) | kind);
+    h = chain_step(h, m.seq);
+    match *ev {
+        Event::Accepted {
+            order_id,
+            leaves_qty,
+        } => {
+            h = chain_step(h, order_id);
+            chain_step(h, leaves_qty)
+        }
+        Event::Rejected { order_id, reason } => {
+            let code = match reason {
+                RejectReason::InvalidQty => 0,
+                RejectReason::InvalidPrice => 1,
+                RejectReason::DuplicateOrderId => 2,
+                RejectReason::UnknownOrderId => 3,
+                RejectReason::PostOnlyWouldCross => 4,
+                RejectReason::FokCannotFill => 5,
+                RejectReason::BookFull => 6,
+            };
+            h = chain_step(h, order_id);
+            chain_step(h, code)
+        }
+        Event::Trade {
+            maker,
+            taker,
+            price,
+            qty,
+        } => {
+            h = chain_step(h, maker);
+            h = chain_step(h, taker);
+            h = chain_step(h, price as u64);
+            chain_step(h, qty)
+        }
+        Event::Closed { order_id, reason } => {
+            let code = match reason {
+                CloseReason::Filled => 0,
+                CloseReason::Cancelled => 1,
+                CloseReason::Expired => 2,
+            };
+            h = chain_step(h, order_id);
+            chain_step(h, code)
+        }
+        Event::Replaced {
+            order_id,
+            price,
+            qty,
+        } => {
+            h = chain_step(h, order_id);
+            h = chain_step(h, price as u64);
+            chain_step(h, qty)
+        }
+    }
+}
+
+/// Keeps one rolling hash per partition over the events it emits. Replicas fed
+/// the same commands emit the same events, so their chains agree, and a
+/// divergence in behaviour shows up as a mismatch. Reading it is O(partitions):
+/// no snapshot of the books is needed. It does not look at state that has not
+/// yet influenced an event; [`MatchingCore`]-level state is covered by comparing
+/// full snapshots on demand.
+pub struct EventDigest {
+    slots: Arc<Vec<AtomicU64>>,
+}
+
+/// Reads the chains of an [`EventDigest`]. Values are current as of the last
+/// pipeline drain.
+#[derive(Clone)]
+pub struct EventDigestHandle {
+    slots: Arc<Vec<AtomicU64>>,
+}
+
+impl EventDigest {
+    /// A digest for `partitions` partitions, each chain starting at the given
+    /// value (zeros for a fresh pipeline, the snapshot's values after a restore).
+    pub fn new(partitions: u32, initial: &[u64]) -> (EventDigest, EventDigestHandle) {
+        let slots: Arc<Vec<AtomicU64>> = Arc::new(
+            (0..partitions as usize)
+                .map(|i| AtomicU64::new(initial.get(i).copied().unwrap_or(0)))
+                .collect(),
+        );
+        (
+            EventDigest {
+                slots: slots.clone(),
+            },
+            EventDigestHandle { slots },
+        )
+    }
+}
+
+impl EventDigestHandle {
+    /// Every partition's chain value, in partition order.
+    pub fn values(&self) -> Vec<u64> {
+        self.slots
+            .iter()
+            .map(|s| s.load(Ordering::Acquire))
+            .collect()
+    }
+}
+
+struct DigestEgress {
+    h: u64,
+    slot: Arc<Vec<AtomicU64>>,
+    partition: usize,
+}
+
+impl EgressFactory for EventDigest {
+    fn create(&self, ctx: &EgressCtx) -> Box<dyn Egress> {
+        let partition = ctx.partition as usize;
+        Box::new(DigestEgress {
+            h: self.slots[partition].load(Ordering::Acquire),
+            slot: self.slots.clone(),
+            partition,
+        })
+    }
+}
+
+impl Egress for DigestEgress {
+    #[inline]
+    fn on_event(&mut self, m: &EvtMsg) {
+        self.h = chain_event(self.h, m);
+    }
+
+    // Published at batch ends and before a drain completes, not per event.
+    #[inline]
+    fn on_batch_end(&mut self) {
+        self.slot[self.partition].store(self.h, Ordering::Release);
+    }
+
+    fn on_shutdown(&mut self) {
+        self.slot[self.partition].store(self.h, Ordering::Release);
+    }
+}

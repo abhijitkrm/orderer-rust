@@ -1,0 +1,5 @@
+orderer-evdigest/1
+partitions 2
+commands 15
+chains 52fe56efaff6d7ce 5c6f46ac06d3928f
+digest 99d5eaafba476c2a879fcdbede24a1d2c2e2a4dee03e0997e1e10f96bf3cdcb8

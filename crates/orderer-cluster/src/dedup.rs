@@ -99,6 +99,13 @@ impl<S: StateMachine> StateMachine for DedupSm<S> {
         b.extend_from_slice(&inner);
         Some(sha256(&b))
     }
+
+    fn deep_digest(&mut self, index: Index) -> Option<[u8; 32]> {
+        let inner = self.inner.deep_digest(index)?;
+        let mut b = self.table_bytes();
+        b.extend_from_slice(&inner);
+        Some(sha256(&b))
+    }
 }
 
 #[cfg(test)]
