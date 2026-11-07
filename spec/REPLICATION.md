@@ -752,3 +752,71 @@ throughput in that test tripled and all runs passed. A cheaper (incremental or
 time-based) digest is future work. Relaxed durability is implemented only in
 orderer-rust so far.
 
+### 13.16 The event-chain digest
+
+Divergence detection (§10) compared a digest of the replica's whole state. For the
+matching pipeline that digest was a full snapshot of every book, then hashed: 177 ms
+with 300k resting orders, linear in the state. It ran on the applier thread every
+`digest_every` entries, so at a realistic commit rate the applier spent its time
+digesting and fell behind (§13.15), and the cost grows with the book. The digest
+is now O(partitions).
+
+**The chain.** Each partition keeps one 64-bit rolling hash over the events it
+emits, fed by an egress plug (so not on the engine's critical path). Replicas fed
+the same commands emit the same events (`PIPELINE.md` §3), so their chains agree,
+and any divergence in behaviour makes them differ. Pinned exactly, because
+replicas of different languages compare them. All arithmetic is on `u64`,
+wrapping:
+
+```
+step(h, x)  = rotl((h ^ x) * 0x9E3779B97F4A7C15, 31)
+chain starts at 0 for each partition
+for every event of the partition, in partition order, with m = (iseq, seq, symbol):
+    h = step(h, iseq)                 iseq of the command that caused it
+    h = step(h, symbol << 8 | kind)   kind: Accepted 1, Rejected 2, Trade 3, Closed 4, Replaced 5
+    h = step(h, seq)                  the book's per-symbol event sequence
+    then, by kind:
+      Accepted  order_id, leaves_qty
+      Rejected  order_id, reason      reason: invalid_qty 0, invalid_price 1, duplicate_order_id 2,
+                                      unknown_order_id 3, post_only_would_cross 4,
+                                      fok_cannot_fill 5, book_full 6
+      Trade     maker, taker, price, qty
+      Closed    order_id, reason      reason: filled 0, cancelled 1, expired 2
+      Replaced  order_id, price, qty
+```
+
+Prices are folded as their two's-complement `u64`. Reasons are coded explicitly,
+not by enum order. The plug publishes its value when a ring batch ends and before
+a drain completes, so a reader drains the pipeline first and then reads.
+
+**The digest.** `digest = SHA-256("orderer-evdigest/1" | commands u64 | partitions
+u32 | chain_0 u64 ... chain_{P-1} u64)`, little-endian, where `commands` is the
+number of commands applied (the pipeline's `iseq`). The wrapper that adds the
+session table (`DedupSm`) hashes its table with this digest as before.
+
+**Two digests.** The state machine interface now has `digest` (the chain digest,
+used for the periodic replica-to-replica comparison) and `deep_digest` (the old
+full-state hash, `SHA-256(iseq u64 | partitions u32 | matcher-snap/1 body)`,
+computed on demand). The client protocol's state hash is the deep one, so a test
+that waits for quiescence still compares complete state across replicas and
+languages. Nothing compares deep digests periodically (`deep_digest_every` is not
+implemented).
+
+**What it does not see.** The chain covers what has been emitted. Two replicas
+whose books differ only in a resting order's price, or in anything that has not
+yet influenced an event, have equal chains until that order trades. The deep
+digest sees it at once; a test pins this down. That is the price of O(1), and the
+reason the state hash stays deep.
+
+**Snapshots.** The pipeline state machine's snapshot carries the chains so a
+replica that restores continues them: `"PSM2" | iseq u64 | partitions u32 |
+chain u64 x partitions | matcher-snap/1 body`. A snapshot with a different
+partition count is refused. Vectors: `vectors/replication-digest/` (README there),
+the whole of `vectors/pipeline/multisymbol` and `fuzz_s11` at 1, 2 and 4 partitions.
+
+**Measured** (orderer-rust, M1, 300k resting orders over 8 symbols, 2 partitions):
+digest 0.2-1.6 ms, deep digest 174-179 ms. `scripts/failover.sh` with relaxed
+fsync and `--digest-every 64`, the configuration that failed to settle about one
+run in ten before: 10 of 10 passes, and about 180,000 acknowledged batches per 24
+seconds against about 15,000 with the old digest. Rust only until the ports land.
+
