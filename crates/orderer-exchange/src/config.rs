@@ -305,11 +305,6 @@ impl ExchangeConfig {
                         g, self.matching_groups
                     ));
                 }
-                if g >= 64 {
-                    return bad(format!(
-                        "credit_group {g}: credit groups are numbered below 64"
-                    ));
-                }
             }
             if c.epoch == 0 {
                 return bad("credit_epoch must be at least 1".into());
@@ -380,11 +375,6 @@ impl ExchangeConfig {
 
     pub fn is_credit(&self, group: u32) -> bool {
         self.credit_groups().contains(&group)
-    }
-
-    /// Bit `g` set for every credit group `g` (what the thinning relay routes by).
-    pub fn credit_mask(&self) -> u64 {
-        self.credit_groups().iter().fold(0, |m, g| m | 1 << g)
     }
 
     /// Each credit group's stream of slice reports: `(stream id, group)`.
@@ -567,7 +557,6 @@ symbol = 15 base=7 quote=2 lot=1
         let one =
             ExchangeConfig::parse(&format!("{GOOD}credit_group = 1\ncredit_epoch = 64\n")).unwrap();
         assert_eq!(one.credit_groups(), &[1]);
-        assert_eq!(one.credit_mask(), 0b10);
         assert!(one
             .canonical()
             .contains("credit_group=1\ncredit_epoch=64\n"));
@@ -579,7 +568,6 @@ symbol = 15 base=7 quote=2 lot=1
         assert_eq!(a.credit_groups(), &[0, 1]);
         assert_eq!(a.checksum(), b.checksum());
         assert_eq!(a.credit.as_ref().unwrap().epoch, 256);
-        assert_eq!(a.credit_mask(), 0b11);
         assert!(a.is_credit(0) && a.is_credit(1) && !a.is_credit(2));
         // each credit group has its own report stream after its partition streams
         assert_eq!(a.credit_sources(), vec![(4, 0), (9, 1)]);
@@ -595,7 +583,6 @@ symbol = 15 base=7 quote=2 lot=1
         let plain = ExchangeConfig::parse(GOOD).unwrap();
         assert_ne!(plain.checksum(), a.checksum());
         assert!(plain.credit_groups().is_empty());
-        assert_eq!(plain.credit_mask(), 0);
         assert!(plain.credit_config(0, 8).is_none());
     }
 
@@ -610,5 +597,34 @@ symbol = 15 base=7 quote=2 lot=1
         assert!(e(&format!("{GOOD}credit_group = 0\ncredit_epoch = 0\n"))
             .contains("credit_epoch must be at least 1"));
         assert!(e(&format!("{GOOD}credit_group = x\n")).contains("not a valid number"));
+    }
+
+    #[test]
+    fn credit_groups_above_63_are_fine_up_to_matching_groups() {
+        // enough symbols that every one of 101 groups owns one (assigned by hash)
+        let map = ShardMap::new(101);
+        let mut first = vec![None; 101];
+        let mut id = 1u32;
+        while first.iter().any(Option::is_none) {
+            first[map.group_of(id) as usize].get_or_insert(id);
+            id += 1;
+        }
+        let mut t =
+            String::from("ledger_shards = 1\nmatching_groups = 101\npartitions = 1\nfee_ppm = 0\n");
+        for s in first.iter().flatten() {
+            t.push_str(&format!("symbol = {s} base=1 quote=2 lot=1\n"));
+        }
+        let ok = ExchangeConfig::parse(&format!("{t}credit_group = 100, 0, 64, 63\n")).unwrap();
+        assert_eq!(ok.credit_groups(), &[0, 63, 64, 100]);
+        assert!(ok.is_credit(64) && ok.is_credit(100) && !ok.is_credit(65));
+        // each group has its own report stream after its partition streams
+        let src = ok.credit_sources();
+        assert_eq!(src.len(), 4);
+        assert_eq!(src[3], (ok.source_base(100) + 1, 100));
+        // the only bound is the number of matching groups
+        let e = ExchangeConfig::parse(&format!("{t}credit_group = 101\n"))
+            .unwrap_err()
+            .0;
+        assert!(e.contains("but there are 101 matching"));
     }
 }

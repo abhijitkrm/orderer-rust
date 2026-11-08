@@ -621,7 +621,7 @@ fn a_thinned_forwarder_sends_each_group_only_its_own_messages() {
     ];
     let mut f = ForwarderRelay::new(0, 2).thinned(Thinning {
         map,
-        credit_mask: 0,
+        credit_groups: Vec::new(),
     });
     f.chaos = 2; // duplicates and overlaps of every kind, too
     let end = Instant::now() + Duration::from_secs(20);

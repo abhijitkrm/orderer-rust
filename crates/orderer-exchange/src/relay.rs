@@ -44,12 +44,12 @@ pub struct ForwarderRelay {
 }
 
 /// Which group a forwarded message is for.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Thinning {
     pub map: ShardMap,
-    /// Bit `g` set when group `g` is in credit mode: only those take grants and
-    /// recalls, and each takes only the ones addressed to it.
-    pub credit_mask: u64,
+    /// The groups in credit mode, sorted: only those take grants and recalls, and
+    /// each takes only the ones addressed to it.
+    pub credit_groups: Vec<u32>,
 }
 
 impl Thinning {
@@ -59,7 +59,7 @@ impl Thinning {
             | OutMsg::SubmitIoc { symbol, .. }
             | OutMsg::Cancel { symbol, .. } => self.map.group_of(symbol) as usize == group,
             OutMsg::Grant { group: g, .. } | OutMsg::Recall { group: g, .. } => {
-                g as usize == group && group < 64 && self.credit_mask >> group & 1 == 1
+                g as usize == group && self.credit_groups.binary_search(&u32::from(g)).is_ok()
             }
         }
     }
@@ -158,9 +158,9 @@ impl ForwarderRelay {
                 continue; // this group is already past the window
             }
             let (idx, part) = (first + skip as u64, &msgs[skip..]);
-            if let Some(t) = self.thin {
+            if let Some(t) = &self.thin {
                 let (_, end, own) =
-                    thin_span(&t, g, idx, first, &msgs).expect("the group is inside the window");
+                    thin_span(t, g, idx, first, &msgs).expect("the group is inside the window");
                 let chaotic = self.chaos > 0 && (self.sends + 1) % self.chaos == 0;
                 if chaotic && end > idx + 1 {
                     // a span that skips ahead of the group's cursor: must be refused
@@ -182,7 +182,7 @@ impl ForwarderRelay {
                     // the same span again, and one that starts below the group's cursor
                     // (overlapping what it has): both must change nothing
                     let _ = tier.forward_span(self.shard, idx, end, &own);
-                    if let Some((a, b, o)) = thin_span(&t, g, first, first, &msgs) {
+                    if let Some((a, b, o)) = thin_span(t, g, first, first, &msgs) {
                         if a < idx {
                             let _ = tier.forward_span(self.shard, a, b, &o);
                         }

@@ -149,7 +149,7 @@ fn main() {
             if !no_thin && cfg.matching_groups > 1 {
                 r = r.thinned(Thinning {
                     map: cfg.shard_map(),
-                    credit_mask: cfg.credit_mask(),
+                    credit_groups: cfg.credit_groups().to_vec(),
                 });
             }
             r.chaos = chaos;

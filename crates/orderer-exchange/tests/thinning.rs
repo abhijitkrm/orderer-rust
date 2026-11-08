@@ -152,7 +152,7 @@ impl Sim {
             map,
             thin: Thinning {
                 map,
-                credit_mask: credit_groups.iter().fold(0, |m, g| m | 1 << g),
+                credit_groups: credit_groups.iter().map(|&g| g as u32).collect(),
             },
             known: vec![0; GROUPS as usize],
             net: Vec::new(),
@@ -432,7 +432,7 @@ fn several_credit_groups_each_get_only_their_own_grants() {
 fn thinning_routes_a_grant_to_its_group_and_only_to_a_credit_group() {
     let t = Thinning {
         map: ShardMap::new(GROUPS),
-        credit_mask: 0b101,
+        credit_groups: vec![0, 2],
     };
     let grant = |group| OutMsg::Grant {
         group,
@@ -467,7 +467,7 @@ fn thinning_sends_a_fraction_of_the_outbox() {
     let map = ShardMap::new(GROUPS);
     let t = Thinning {
         map,
-        credit_mask: 1,
+        credit_groups: vec![0],
     };
     let msgs: Vec<OutMsg> = (0..300u64)
         .map(|i| OutMsg::Submit {
@@ -553,4 +553,31 @@ fn span_wire_format_is_strict() {
         msgs: vec![]
     }))
     .is_err());
+}
+
+#[test]
+fn thinning_routes_by_group_numbers_above_63() {
+    let t = Thinning {
+        map: ShardMap::new(101),
+        credit_groups: vec![0, 63, 64, 100],
+    };
+    let grant = |group| OutMsg::Grant {
+        group,
+        account: 1,
+        asset: USD,
+        amount: 5,
+    };
+    for g in 0..101u16 {
+        let credit = [0, 63, 64, 100].contains(&g);
+        for to in [0usize, 1, 62, 63, 64, 65, 99, 100] {
+            assert_eq!(
+                t.owns(to, &grant(g)),
+                credit && to == g as usize,
+                "to {to} grant {g}"
+            );
+        }
+    }
+    // 64 is not group 0 shifted out of a mask
+    assert!(!t.owns(0, &grant(64)));
+    assert!(t.owns(64, &grant(64)));
 }

@@ -89,6 +89,60 @@ fn involves(shard: usize, n: usize, e: &Event) -> bool {
     }
 }
 
+/// Has every ledger shard's outbox been delivered to credit group `group_idx`
+/// (`cursors[s][g]` is group `g`'s cursor for shard `s`)?
+pub fn grants_delivered(ledgers: &[Ledger], cursors: &[Vec<u64>], group_idx: usize) -> bool {
+    ledgers
+        .iter()
+        .enumerate()
+        .all(|(s, l)| cursors[s].get(group_idx).copied().unwrap_or(0) >= l.outbox_next())
+}
+
+/// Is one credit group settled: every stream caught up, nothing unreported at its
+/// slice or behind in it, every grant delivered, and the group's own report
+/// stream read to its end (`group_end` as the group holds it, `stream_end` as read).
+pub fn slice_settled(
+    caught_up: bool,
+    unreported: bool,
+    behind: bool,
+    grants_delivered: bool,
+    group_end: u64,
+    stream_end: u64,
+) -> bool {
+    caught_up && !unreported && !behind && grants_delivered && group_end == stream_end
+}
+
+/// The slice identity of credit group `group` at rest: per asset, what the slice
+/// holds, less what it has taken in and plus what it has paid out, equals what the
+/// ledgers have lent to *this* group less their booked slice-in plus slice-out.
+pub fn slice_identity_violations(
+    group: u16,
+    assets: &[u32],
+    slice: &Slice,
+    ledgers: &[Ledger],
+) -> Vec<String> {
+    let mut bad = Vec::new();
+    let eng = slice.engine();
+    for &asset in assets {
+        let (e_in, e_out) = eng.settled_flow(asset);
+        let lhs = eng.holdings(asset) as i128 - e_in as i128 + e_out as i128;
+        let (mut lent, mut s_in, mut s_out) = (0i128, 0i128, 0i128);
+        for l in ledgers {
+            lent += l.lent_total_to(asset, group) as i128;
+            let f = l.group_flow(asset, group);
+            s_in += f.slice_in as i128;
+            s_out += f.slice_out as i128;
+        }
+        let rhs = lent - s_in + s_out;
+        if lhs != rhs {
+            bad.push(format!(
+                "group {group} asset {asset}: slice and ledgers disagree at rest: slice side {lhs} != ledger side {rhs} (lent {lent}, slice-in {s_in}, slice-out {s_out})"
+            ));
+        }
+    }
+    bad
+}
+
 impl Audit {
     pub fn new(
         ledgers: Vec<GatewayClient>,
@@ -270,14 +324,15 @@ impl Audit {
             // in it, every grant delivered, each group stream fully settled
             for (sa, slice, st) in &slice1 {
                 let group_end = ends.get(&sa.source).copied().unwrap_or(0);
-                let grants_in: bool = ledgers.iter().enumerate().all(|(s, l)| {
-                    cursor_before[s].get(sa.group_idx).copied().unwrap_or(0) >= l.outbox_next()
-                });
-                at_rest &= caught_up
-                    && !slice.unreported()
-                    && !st.behind
-                    && grants_in
-                    && st.group_end == group_end;
+                let grants_in = grants_delivered(&ledgers, &cursor_before, sa.group_idx);
+                at_rest &= slice_settled(
+                    caught_up,
+                    slice.unreported(),
+                    st.behind,
+                    grants_in,
+                    st.group_end,
+                    group_end,
+                );
             }
             if at_rest {
                 // a second read of everything must be byte-identical: nothing moved
@@ -294,25 +349,12 @@ impl Audit {
             }
             if at_rest {
                 for (sa, slice, _) in &slice1 {
-                    let eng = slice.engine();
-                    for &asset in &self.assets {
-                        let (e_in, e_out) = eng.settled_flow(asset);
-                        let lhs = eng.holdings(asset) as i128 - e_in as i128 + e_out as i128;
-                        let (mut lent, mut s_in, mut s_out) = (0i128, 0i128, 0i128);
-                        for l in &ledgers {
-                            lent += l.lent_total_to(asset, sa.group) as i128;
-                            let f = l.group_flow(asset, sa.group);
-                            s_in += f.slice_in as i128;
-                            s_out += f.slice_out as i128;
-                        }
-                        let rhs = lent - s_in + s_out;
-                        if lhs != rhs {
-                            rep.violations.push(format!(
-                                "group {} asset {asset}: slice and ledgers disagree at rest: slice side {lhs} != ledger side {rhs} (lent {lent}, slice-in {s_in}, slice-out {s_out})",
-                                sa.group
-                            ));
-                        }
-                    }
+                    rep.violations.extend(slice_identity_violations(
+                        sa.group,
+                        &self.assets,
+                        slice,
+                        &ledgers,
+                    ));
                 }
             }
         }
