@@ -25,12 +25,17 @@ POLL_US=${POLL_US:-200}
 
 start_cluster
 "$BIN/exchange-load" deposit --config "$CONF" --ledgers "$ALL_GATEWAYS" --accounts "$ACCOUNTS" --acked "$TMP/acked"
+MODE=phase1
+if [[ "$SLICES" == 1 ]]; then
+  MODE=phase2 # orders go to the credit group directly, against slices lent below
+  "$BIN/exchange-load" lend --config "$CONF" --ledgers "$ALL_GATEWAYS" --tier "$ALL_TIER_EX" --accounts "$ACCOUNTS" --acked "$TMP/acked-lend" --lend "${LEND:-8000000}"
+fi
 echo "topology: $NS ledger shards x3, $MG matching groups x3, fsync=$FSYNC, auth=$([[ -n "${ORDERER_KEY:-}" ]] && echo on || echo off), chaos=$CHAOS"
 for r in $RATES; do
   sleep 2
   "$BIN/exchange-bench" --config "$CONF" --ledgers "$ALL_GATEWAYS" --tier "$ALL_TIER_EX" --rate "$r" \
     --secs "$SECS" --warmup "$WARM" --threads "$THREADS" --accounts "$ACCOUNTS" --poll-us "$POLL_US" \
-    --label "fsync=$FSYNC rate=$r"
+    --mode "$MODE" --label "$MODE fsync=$FSYNC rate=$r"
 done
 echo "settling and auditing what was measured"
 "$BIN/exchange-audit" --config "$CONF" --ledgers "$ALL_GATEWAYS" --tier "$ALL_TIER_EX" \
