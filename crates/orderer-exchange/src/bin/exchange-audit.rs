@@ -14,7 +14,7 @@
 //! `--ledgers`/`--tier` are gateway/exchange addresses, `--*-clients` the client
 //! ports (for state digests), each in node-id order, one `;`-separated list per shard.
 
-use orderer_exchange::audit::{compare_digests, Audit};
+use orderer_exchange::audit::{compare_digests, Audit, SliceAudit};
 use orderer_exchange::cli::{parse_groups, Setup};
 use orderer_exchange::{GatewayClient, TierClient};
 use std::collections::BTreeMap;
@@ -77,7 +77,17 @@ fn main() {
         die("--ledgers and --tier must list every shard and every group of the config");
     }
     let c2 = cfg.clone();
-    let mut audit = Audit::new(gws, tiers, cfg.sources(), move |s| c2.ledger_config(s));
+    let mut audit = Audit::new(gws, tiers, cfg.settle_sources(), move |s| {
+        c2.ledger_config(s)
+    });
+    let slices = cfg.credit_source().map(|(source, group)| SliceAudit {
+        group_idx: group,
+        source,
+        group: group as u16,
+    });
+    if let Some(sa) = slices {
+        audit = audit.with_slices(sa);
+    }
     let groups: Vec<Vec<SocketAddr>> = lclients
         .split(';')
         .chain(tclients.split(';'))
@@ -124,7 +134,10 @@ fn main() {
             rep.summary
         );
         if once {
-            if rep.caught_up && digests_checked && (!expect_idle || rep.open_orders == 0) {
+            // with slices, converged also means at rest: the slice identity was checked
+            let at_rest = slices.is_none() || rep.at_rest;
+            if rep.caught_up && at_rest && digests_checked && (!expect_idle || rep.open_orders == 0)
+            {
                 break;
             }
             if start.elapsed() > Duration::from_secs(wait) {
@@ -142,7 +155,8 @@ fn main() {
         for line in text.lines() {
             let f: Vec<&str> = line.split_whitespace().collect();
             match f.as_slice() {
-                ["R", id, qty] => orders.push((
+                // `S`: an order entered at the credit group (phase 2), with its account
+                ["R", id, qty] | ["S", id, qty, _] => orders.push((
                     id.parse::<u64>().unwrap_or(0),
                     qty.parse::<u64>().unwrap_or(0),
                 )),

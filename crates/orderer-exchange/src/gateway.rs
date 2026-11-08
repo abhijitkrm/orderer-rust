@@ -90,6 +90,22 @@ impl GatewayServer {
         view: LedgerView,
         auth: Auth,
     ) -> io::Result<GatewayServer> {
+        Self::start_stamped(addr, replica, view, auth, false)
+    }
+
+    /// With `stamp`, the serving node wraps every client command (`CMD`) and bare
+    /// command (`RAW`) in `Cmd::At` with its wall-clock time when it proposes it, so
+    /// the ledger's clock is the leader's time, a function of the log (replicas never
+    /// read a clock in `apply`). Batches (the settler's chains) are not stamped. A
+    /// leader whose clock is behind another's cannot move the ledger clock back
+    /// (`At` only raises it).
+    pub fn start_stamped(
+        addr: SocketAddr,
+        replica: ReplicaHandle,
+        view: LedgerView,
+        auth: Auth,
+        stamp: bool,
+    ) -> io::Result<GatewayServer> {
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
@@ -102,7 +118,7 @@ impl GatewayServer {
                         let (h, v, stop) = (replica.clone(), view.clone(), s2.clone());
                         let auth = auth.clone();
                         thread::spawn(move || {
-                            let _ = serve(conn, h, v, stop, auth);
+                            let _ = serve(conn, h, v, stop, auth, stamp);
                         });
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -133,6 +149,7 @@ fn serve(
     v: LedgerView,
     stop: Arc<AtomicBool>,
     auth: Auth,
+    stamp: bool,
 ) -> io::Result<()> {
     conn.set_nonblocking(false)?;
     conn.set_nodelay(true)?;
@@ -151,7 +168,7 @@ fn serve(
             }
             Err(e) => return Err(e),
         };
-        let (rk, rb) = handle(kind, &body, &h, &v);
+        let (rk, rb) = handle(kind, &body, &h, &v, stamp);
         conn.send(rk, &rb)?;
     }
     Ok(())
@@ -207,7 +224,24 @@ fn gate(lin: u8, h: &ReplicaHandle) -> Result<(), (u8, Vec<u8>)> {
     }
 }
 
-fn handle(kind: u8, body: &[u8], h: &ReplicaHandle, v: &LedgerView) -> (u8, Vec<u8>) {
+/// `cmd` (an encoded command), stamped with the wall-clock time when asked to be;
+/// a command that is already an `At` is left alone.
+fn stamped(cmd: &[u8], stamp: bool) -> Vec<u8> {
+    if stamp {
+        if let Ok(c) = decode_cmd(cmd) {
+            if !matches!(c, Cmd::At { .. }) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0);
+                return encode_cmd(&c.at(now));
+            }
+        }
+    }
+    cmd.to_vec()
+}
+
+fn handle(kind: u8, body: &[u8], h: &ReplicaHandle, v: &LedgerView, stamp: bool) -> (u8, Vec<u8>) {
     let err = |m: &str| (R_ERR, m.as_bytes().to_vec());
     let mut r = Rd::new(body);
     match kind {
@@ -219,18 +253,19 @@ fn handle(kind: u8, body: &[u8], h: &ReplicaHandle, v: &LedgerView) -> (u8, Vec<
             if decode_cmd(cmd).is_err() {
                 return err("bad ledger command");
             }
+            let cmd = stamped(cmd, stamp);
             let mut p = Vec::with_capacity(17 + cmd.len());
             p.push(TAG_SESSION);
             p.extend_from_slice(&client.to_le_bytes());
             p.extend_from_slice(&seq.to_le_bytes());
-            p.extend_from_slice(cmd);
+            p.extend_from_slice(&cmd);
             propose_for_reply(h, v, p)
         }
         Q_RAW => {
             if decode_cmd(body).is_err() {
                 return err("bad ledger command");
             }
-            propose_for_reply(h, v, body.to_vec())
+            propose_for_reply(h, v, stamped(body, stamp))
         }
         Q_BATCH => {
             // validate the framing here so a bad request is refused, not proposed

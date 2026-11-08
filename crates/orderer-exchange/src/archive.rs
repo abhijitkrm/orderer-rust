@@ -340,6 +340,37 @@ impl TierView {
         c.as_ref()?.clients.get(&client).copied()
     }
 
+    /// `(account, asset)` pairs whose orders were refused for lack of credit and that
+    /// no grant has answered yet (credit mode).
+    pub fn demand(&self) -> Vec<(u64, u32)> {
+        let c = self.credit.lock().expect("credit lock");
+        c.as_ref()
+            .map(|c| c.demand.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// The credit slice's snapshot, the group stream's last index and the demand
+    /// list, read together under one lock.
+    #[allow(clippy::type_complexity)]
+    pub fn slice_state(&self) -> Option<(Vec<u8>, u64, Vec<(u64, u32)>, bool)> {
+        // same lock order as the credit epoch: archive, then credit
+        let a = self.archive.lock().expect("archive lock");
+        let c = self.credit.lock().expect("credit lock");
+        let c = c.as_ref()?;
+        // behind: the matcher has emitted events the slice has not settled yet
+        let behind = a
+            .parts
+            .iter()
+            .enumerate()
+            .any(|(p, part)| c.cursors[p] < part.next);
+        Some((
+            c.slice.snapshot(),
+            c.end(),
+            c.demand.iter().copied().collect(),
+            behind,
+        ))
+    }
+
     /// Run `f` on the credit slice (inspection in tests and audits).
     pub fn with_slice<R>(&self, f: impl FnOnce(&orderer_ledger::Slice) -> R) -> Option<R> {
         let c = self.credit.lock().expect("credit lock");

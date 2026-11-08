@@ -4,7 +4,10 @@
 # of the exchange (MG matching groups and NS ledger shards of 3 replicas each, a
 # forwarder per shard, one settler, a tick driver, an audit). Source it, then call
 # start_cluster. Settings (environment): SHARDS (2), MGROUPS (2), BASE_PORT, PROFILE
-# (release), FSYNC (relaxed:10), CHAOS (5), AUTH (1), KEEP, KEEP_ALIVE.
+# (release), FSYNC (relaxed:10), CHAOS (5), AUTH (1), STAMP (1: ledger leaders stamp
+# commands with their time), SLICES (0; 1 = phase 2: matching group 0 runs in credit mode
+# and a slice driver runs; CREDIT_EPOCH (64), SLICE_CHUNK (2000000), SLICE_IDLE_MS (6000)),
+# KEEP, KEEP_ALIVE.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -15,6 +18,11 @@ BASE=${BASE_PORT:-47500}
 PROFILE=${PROFILE:-release}
 FSYNC=${FSYNC:-relaxed:10}
 CHAOS=${CHAOS:-5} # every 5th relay delivery is also duplicated, overlapped or sent out of order (0 = off)
+STAMP=${STAMP:-1}
+SLICES=${SLICES:-0}
+CREDIT_EPOCH=${CREDIT_EPOCH:-64}
+SLICE_CHUNK=${SLICE_CHUNK:-2000000}
+SLICE_IDLE_MS=${SLICE_IDLE_MS:-6000}
 BIN=target/$PROFILE
 
 if [[ "$PROFILE" == release ]]; then
@@ -38,6 +46,9 @@ symbol = 13 base=5 quote=2 lot=1
 symbol = 14 base=6 quote=2 lot=1
 symbol = 15 base=7 quote=2 lot=1
 EOF
+if [[ "$SLICES" == 1 ]]; then
+  printf 'credit_group    = 0\ncredit_epoch    = %s\n' "$CREDIT_EPOCH" >>"$CONF"
+fi
 if [[ "${AUTH:-1}" != 0 ]]; then
   ORDERER_KEY=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
   export ORDERER_KEY
@@ -51,6 +62,7 @@ declare -a LED_PID=()
 declare -a FWD_PID=()
 SET_PID=0
 TICK_PID=0
+SLICE_PID=0
 for ((i = 0; i < MG * 3; i++)); do TIER_PID[$i]=0; done
 for ((i = 0; i < NS * 3; i++)); do LED_PID[$i]=0; done
 for ((s = 0; s < NS; s++)); do FWD_PID[$s]=0; done
@@ -77,7 +89,7 @@ cleanup() {
     return
   fi
   local p
-  for p in "${TIER_PID[@]}" "${LED_PID[@]}" "${FWD_PID[@]}" "$SET_PID" "$TICK_PID" "${LOAD_PID:-0}" "${AUDIT_PID:-0}"; do
+  for p in "${TIER_PID[@]}" "${LED_PID[@]}" "${FWD_PID[@]}" "$SET_PID" "$TICK_PID" "$SLICE_PID" "${LOAD_PID:-0}" "${AUDIT_PID:-0}"; do
     [[ "$p" != 0 && -n "$p" ]] && kill -9 "$p" 2>/dev/null || true
   done
   if [[ $rc -ne 0 ]]; then echo "FAILED (status $rc); logs kept in $TMP"; return; fi
@@ -98,7 +110,8 @@ start_ledger() {
   local s=$1 i=$2
   "$BIN/ledger-node" --config "$CONF" --shard "$s" --id "$i" --members "$(led_members "$s")" \
     --client "127.0.0.1:$(led_port 100 "$s" "$i")" --gateway "127.0.0.1:$(led_port 200 "$s" "$i")" \
-    --dir "$TMP/ledger$s-$i" --compact-every 4000 --digest-every 2000 --fsync "$FSYNC" >>"$TMP/ledger$s-$i.log" 2>&1 &
+    --dir "$TMP/ledger$s-$i" --compact-every 4000 --digest-every 2000 --fsync "$FSYNC" \
+    $([[ "$STAMP" == 1 ]] && echo --stamp) >>"$TMP/ledger$s-$i.log" 2>&1 &
   LED_PID[$((s * 3 + i))]=$!
 }
 start_fwd() {
@@ -116,6 +129,11 @@ start_tick() {
   "$BIN/exchange-relay" tick --config "$CONF" --ledgers "$ALL_GATEWAYS" --interval-ms 200 --sweep-every-ms 2000 \
     --max-age-ms 6000 --retry-ms 6000 >>"$TMP/tick.log" 2>&1 &
   TICK_PID=$!
+}
+start_slice_driver() {
+  "$BIN/exchange-relay" slice-driver --config "$CONF" --ledgers "$ALL_GATEWAYS" --tier "$ALL_TIER_EX" \
+    --interval-ms 200 --chunk "$SLICE_CHUNK" --low-water-pct 25 --idle-ms "$SLICE_IDLE_MS" >>"$TMP/slice.log" 2>&1 &
+  SLICE_PID=$!
 }
 start_audit() {
   "$BIN/exchange-audit" --config "$CONF" --ledgers "$ALL_GATEWAYS" --tier "$ALL_TIER_EX" \
@@ -143,5 +161,6 @@ for ((s = 0; s < NS; s++)); do wait_leader "ledger shard $s" "$(led_clients "$s"
 for ((s = 0; s < NS; s++)); do start_fwd "$s"; done
 start_set
 start_tick
+[[ "$SLICES" == 1 ]] && start_slice_driver
 sleep 1
 }

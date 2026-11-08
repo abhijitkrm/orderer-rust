@@ -203,3 +203,51 @@ pub fn settle_cmds_routed(
     }
     out
 }
+
+/// One pass over `events` that builds, for every ledger shard, the chain of settle
+/// commands it is owed after its mark: the same commands that
+/// [`settle_cmds_routed`] gives each shard separately, in O(events + commands)
+/// instead of O(events x shards). `marks[s]` is shard `s`'s mark for `source`; a
+/// shard's chain stops after `max` commands. Events that name an order of a shard
+/// outside `marks` (a slice order, or a shard this caller does not serve) are not
+/// routed to it.
+pub fn route_settles(
+    source: u32,
+    marks: &[u64],
+    events: impl IntoIterator<Item = (u64, Event)>,
+    max: usize,
+    shard_of: impl Fn(AccountId) -> u16,
+    fee_shard: u16,
+) -> Vec<Vec<Cmd>> {
+    let n = marks.len();
+    let mut prev: Vec<u64> = marks.to_vec();
+    let mut out: Vec<Vec<Cmd>> = vec![Vec::new(); n];
+    for (idx, event) in events {
+        let (a, b): (Option<u16>, Option<u16>) = match event {
+            Event::Trade { buy, sell, .. } => (Some(order_shard(buy)), Some(order_shard(sell))),
+            Event::Closed { order } => (Some(order_shard(order)), None),
+            Event::SliceIn { account, .. }
+            | Event::SliceOut { account, .. }
+            | Event::Returned { account, .. } => (Some(shard_of(account)), None),
+            Event::SliceFee { .. } => (Some(fee_shard), None),
+        };
+        for (k, sh) in [a, b].into_iter().enumerate() {
+            let Some(sh) = sh else { continue };
+            let s = sh as usize;
+            // a trade between two accounts of one shard is one command, not two
+            if s >= n || (k == 1 && a == b) {
+                continue;
+            }
+            if idx > marks[s] && out[s].len() < max {
+                out[s].push(Cmd::Settle {
+                    source,
+                    prev: prev[s],
+                    idx,
+                    event,
+                });
+                prev[s] = idx;
+            }
+        }
+    }
+    out
+}

@@ -20,7 +20,7 @@ mod slice;
 mod sm;
 
 pub use codec::{decode_cmd, encode_cmd, DecodeError};
-pub use flow::{settle_cmds, settle_cmds_routed, Accept, Forwarder, Intake, Send};
+pub use flow::{route_settles, settle_cmds, settle_cmds_routed, Accept, Forwarder, Intake, Send};
 pub use ledger::{
     is_slice_order, order_shard, Adjustment, Amount, AssetId, Balance, Cmd, Config, Event, Ledger,
     Order, OrderId, OutMsg, Outcome, Reject, Side, Symbol, SymbolId, ADJUST_LOG, FEE_ACCOUNT,

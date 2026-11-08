@@ -92,6 +92,20 @@ impl Slice {
         self.engine.anomalies()
     }
 
+    /// True while some change of the slice (a fill, a fee) has not yet been
+    /// reported to the ledgers: the slice and the ledgers agree exactly only when
+    /// this is false and no report is in flight.
+    pub fn unreported(&self) -> bool {
+        if !self.dirty.is_empty() {
+            return true;
+        }
+        self.engine.config().symbols.values().any(|s| {
+            [s.base, s.quote]
+                .into_iter()
+                .any(|a| self.engine.fees(a) > self.fee_reported.get(&a).copied().unwrap_or(0))
+        })
+    }
+
     pub fn open_orders(&self) -> usize {
         self.engine.open_orders()
     }

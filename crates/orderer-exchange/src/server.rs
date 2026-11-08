@@ -17,13 +17,29 @@
 //! - `READ (3)`: `source u32 | from u64 | max u32`. Served by any replica from its
 //!   applied state, no log round trip. Reply `EVENTS` or `TRUNCATED`.
 //!
+//! - `SPAN (7)`: `shard u16 | first u64 | end u64 | n u32 | n x (offset u32 | message)`
+//!   (the body of a tag-5 version-2 entry, `wire::Span`): the thinned forward. Reply
+//!   `CURSOR`; `gap` is 1 when `first` is above the cursor.
+//! - `SLICE (4)`: a credit-slice request (the whole tag-6 entry, `wire::SliceReq`), for
+//!   a group in credit mode. The leader proposes it, waits until it is applied and
+//!   answers with the result recorded for its `(client, seq)`. The retry key is the
+//!   pair: a client repeats the same request until it gets a definite answer; the
+//!   group applies only a sequence number above the last it saw for that client, so
+//!   a retry never enters an order twice. Reply `SLICE` (or `STALE` for a sequence
+//!   number the group has already moved past).
+//! - `SLICE_STATE (5)`: linearizable read of the slice: reply `SLICE_STATE`.
+//! - `TICK (6)`: propose an epoch tick (tag 7), wait for it, reply `OK`.
+//!
 //! Replies: `CURSOR (1)`: `cursor u64 | gap u8` (the next outbox index expected;
 //! `gap` is 1 when the request skipped ahead of it and was refused);
 //! `EVENTS (2)`: `end u64 | n u32 | n x (idx u64 | event)` (`end` is the last
 //! index of the stream, so `idx` below it means more to read);
 //! `TRUNCATED (3)`: `base u64`; `NOT_LEADER (4)`: `hint i64` (-1 unknown);
 //! `BUSY (5)`; `UNKNOWN (6)` (the proposal may have committed: retry, the intake
-//! makes that safe); `ERR (7)`: text.
+//! makes that safe); `ERR (7)`: text; `SLICE (8)`: `kind u8 (0 entered, 1 refused) |
+//! value u64` (the order id, or the `credit::reject_code`); `STALE (9)`: `last u64`;
+//! `SLICE_STATE (10)`: `end u64 | behind u8 | nd u32 | nd x (account u64 | asset u32) | slice
+//! snapshot`; `OK (11)`.
 
 use crate::archive::{TierView, Truncated};
 use crate::secure::{Auth, Link, Peer};
@@ -42,6 +58,10 @@ const LABEL: &[u8] = b"xchg";
 const Q_FORWARD: u8 = 1;
 const Q_CURSOR: u8 = 2;
 const Q_READ: u8 = 3;
+const Q_SLICE: u8 = 4;
+const Q_SLICE_STATE: u8 = 5;
+const Q_TICK: u8 = 6;
+const Q_SPAN: u8 = 7;
 const R_CURSOR: u8 = 1;
 const R_EVENTS: u8 = 2;
 const R_TRUNCATED: u8 = 3;
@@ -49,6 +69,10 @@ const R_NOT_LEADER: u8 = 4;
 const R_BUSY: u8 = 5;
 const R_UNKNOWN: u8 = 6;
 const R_ERR: u8 = 7;
+const R_SLICE: u8 = 8;
+const R_STALE: u8 = 9;
+const R_SLICE_STATE: u8 = 10;
+const R_OK: u8 = 11;
 
 pub struct ExchangeServer {
     stop: Arc<AtomicBool>,
@@ -204,6 +228,75 @@ fn handle(kind: u8, body: &[u8], h: &ReplicaHandle, v: &TierView) -> (u8, Vec<u8
                 Err(e) => refusal(e),
             }
         }
+        Q_SPAN => {
+            let mut entry = vec![crate::wire::TAG_FORWARD, 2];
+            entry.extend_from_slice(body);
+            let Ok(sp) = crate::wire::decode_span(&entry) else {
+                return err("bad span");
+            };
+            match h.propose(entry) {
+                Ok(index) => {
+                    if !wait_applied(h, index) {
+                        return (R_UNKNOWN, vec![]);
+                    }
+                    let cursor = v.cursor(sp.shard);
+                    cursor_reply(cursor, sp.first > cursor)
+                }
+                Err(e) => refusal(e),
+            }
+        }
+        Q_SLICE => {
+            let Ok(q) = crate::wire::decode_slice_req(body) else {
+                return err("bad slice request");
+            };
+            match h.propose(body.to_vec()) {
+                Ok(index) => {
+                    if !wait_applied(h, index) {
+                        return (R_UNKNOWN, vec![]);
+                    }
+                    match v.slice_result(q.client) {
+                        Some((seq, res)) if seq == q.seq => {
+                            let (kind, val) = match res {
+                                Ok(order) => (0u8, order),
+                                Err(rej) => (1u8, crate::tier::credit::reject_code(rej) as u64),
+                            };
+                            let mut b = vec![kind];
+                            b.extend_from_slice(&val.to_le_bytes());
+                            (R_SLICE, b)
+                        }
+                        Some((seq, _)) if seq > q.seq => (R_STALE, seq.to_le_bytes().to_vec()),
+                        _ => err("slice request not applied (is the group in credit mode?)"),
+                    }
+                }
+                Err(e) => refusal(e),
+            }
+        }
+        Q_SLICE_STATE => match h.barrier() {
+            Ok(_) => match v.slice_state() {
+                Some((snap, end, demand, behind)) => {
+                    let mut b = end.to_le_bytes().to_vec();
+                    b.push(behind as u8);
+                    b.extend_from_slice(&(demand.len() as u32).to_le_bytes());
+                    for (a, asset) in demand {
+                        b.extend_from_slice(&a.to_le_bytes());
+                        b.extend_from_slice(&asset.to_le_bytes());
+                    }
+                    b.extend_from_slice(&snap);
+                    (R_SLICE_STATE, b)
+                }
+                None => err("the group is not in credit mode"),
+            },
+            Err(e) => refusal(e),
+        },
+        Q_TICK => match h.propose(crate::wire::encode_epoch_tick()) {
+            Ok(index) => {
+                if !wait_applied(h, index) {
+                    return (R_UNKNOWN, vec![]);
+                }
+                (R_OK, vec![])
+            }
+            Err(e) => refusal(e),
+        },
         Q_CURSOR => {
             let Ok(shard) = r.u16() else {
                 return err("short cursor");
@@ -253,6 +346,27 @@ pub enum Refusal {
         base: u64,
     },
     Error(String),
+}
+
+/// The group's answer to a slice request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SliceAnswer {
+    /// The order id (for a cancel, the id that was cancelled).
+    Entered(u64),
+    Refused(orderer_ledger::Reject),
+    /// The group has already seen a later request from this client: the answer to
+    /// this one was overwritten (a client that sends one at a time never gets this).
+    Stale(u64),
+}
+
+/// A read of the group's credit slice.
+#[derive(Clone, Debug)]
+pub struct SliceState {
+    pub snapshot: Vec<u8>,
+    pub group_end: u64,
+    /// The matcher has emitted events the slice has not settled yet.
+    pub behind: bool,
+    pub demand: Vec<(u64, u32)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -323,6 +437,91 @@ impl ExchangeClient {
         // The request body is the entry without its tag and version bytes.
         let (k, b) = self.call(Q_FORWARD, &entry[2..])?;
         Ok(Self::cursor_of(k, &b))
+    }
+
+    /// Deliver a thinned span of ledger `shard`'s outbox: `msgs` are the messages
+    /// for this group among the indices `first..end`.
+    pub fn forward_span(
+        &mut self,
+        shard: u16,
+        first: u64,
+        end: u64,
+        msgs: &[(u64, OutMsg)],
+    ) -> io::Result<Result<ForwardAck, Refusal>> {
+        let entry = crate::wire::encode_span(&crate::wire::Span {
+            shard,
+            first,
+            end,
+            msgs: msgs.to_vec(),
+        });
+        let (k, b) = self.call(Q_SPAN, &entry[2..])?;
+        Ok(Self::cursor_of(k, &b))
+    }
+
+    /// Enter or cancel an order at a credit-mode group. The answer is definite
+    /// (`Entered`/`Refused`/`Stale`) or the request may or may not have been applied
+    /// (`Refusal::Unknown`: repeat the same `(client, seq)`).
+    pub fn slice_request(
+        &mut self,
+        q: &crate::wire::SliceReq,
+    ) -> io::Result<Result<SliceAnswer, Refusal>> {
+        let (k, b) = self.call(Q_SLICE, &crate::wire::encode_slice_req(q))?;
+        Ok(match k {
+            R_SLICE if b.len() == 9 => {
+                let val = u64::from_le_bytes(b[1..9].try_into().unwrap());
+                match b[0] {
+                    0 => Ok(SliceAnswer::Entered(val)),
+                    1 => match crate::tier::credit::reject_from_code(val as u8) {
+                        Some(r) => Ok(SliceAnswer::Refused(r)),
+                        None => Err(Refusal::Error("unknown reject code".into())),
+                    },
+                    _ => Err(Refusal::Error("bad slice reply".into())),
+                }
+            }
+            R_STALE if b.len() == 8 => Ok(SliceAnswer::Stale(u64::from_le_bytes(
+                b[..8].try_into().unwrap(),
+            ))),
+            _ => Err(Self::refused(k, &b)),
+        })
+    }
+
+    /// The credit slice, linearizable: its snapshot (see `Slice::restore`), the last
+    /// index of the group stream, and the demand list.
+    #[allow(clippy::type_complexity)]
+    pub fn slice_state(&mut self) -> io::Result<Result<SliceState, Refusal>> {
+        let (k, b) = self.call(Q_SLICE_STATE, &[])?;
+        if k != R_SLICE_STATE {
+            return Ok(Err(Self::refused(k, &b)));
+        }
+        let bad = || io::Error::new(io::ErrorKind::InvalidData, "slice state reply");
+        let mut r = Rd::new(&b);
+        let end = r.u64().map_err(|_| bad())?;
+        let behind = r.u8().map_err(|_| bad())? == 1;
+        let nd = r.u32().map_err(|_| bad())? as usize;
+        if nd > r.left() / 12 {
+            return Err(bad());
+        }
+        let mut demand = Vec::with_capacity(nd);
+        for _ in 0..nd {
+            demand.push((r.u64().map_err(|_| bad())?, r.u32().map_err(|_| bad())?));
+        }
+        let rest = r.take(r.left()).map_err(|_| bad())?.to_vec();
+        Ok(Ok(SliceState {
+            snapshot: rest,
+            group_end: end,
+            behind,
+            demand,
+        }))
+    }
+
+    /// Close the credit epoch now (a quiet group has no entries to count).
+    pub fn tick(&mut self) -> io::Result<Result<(), Refusal>> {
+        let (k, b) = self.call(Q_TICK, &[])?;
+        Ok(if k == R_OK {
+            Ok(())
+        } else {
+            Err(Self::refused(k, &b))
+        })
     }
 
     /// The next outbox index matching expects from `shard` (linearizable).

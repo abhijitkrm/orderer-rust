@@ -19,7 +19,7 @@
 use crate::wire::{get_event, put_event, Rd, WireError};
 use orderer_cluster::sha256::sha256;
 use orderer_ledger::{Config, Event, OrderId, Reject, Slice};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
@@ -51,6 +51,10 @@ pub struct CreditState {
     /// them (should stay zero; raise `TierConfig::retain`).
     pub lost: u64,
     pub(crate) clients: BTreeMap<u64, (u64, SliceResult)>,
+    /// `(account, asset)` pairs an order was refused for lack of credit, until the
+    /// ledger's next grant for the pair arrives: what a slice driver should lend to
+    /// next. A function of the log, so every replica has the same set.
+    pub(crate) demand: BTreeSet<(u64, u32)>,
     /// Rolling hash over the group stream: the cheap divergence digest of it.
     pub(crate) chain: [u8; 32],
     pub(crate) epoch: u64,
@@ -74,8 +78,12 @@ const REJECTS: [Reject; 13] = [
     Reject::ReservedAccount,
 ];
 
-fn reject_code(r: Reject) -> u8 {
+pub fn reject_code(r: Reject) -> u8 {
     REJECTS.iter().position(|x| *x == r).unwrap() as u8
+}
+
+pub fn reject_from_code(c: u8) -> Option<Reject> {
+    REJECTS.get(c as usize).copied()
 }
 
 impl CreditState {
@@ -90,6 +98,7 @@ impl CreditState {
             entries: 0,
             lost: 0,
             clients: BTreeMap::new(),
+            demand: BTreeSet::new(),
             chain: [0; 32],
             epoch: cfg.epoch.max(1),
         }
@@ -140,6 +149,7 @@ impl CreditState {
             out.extend_from_slice(&c.to_le_bytes());
         }
         out.extend_from_slice(&(self.slice.open_orders() as u64).to_le_bytes());
+        out.extend_from_slice(&(self.demand.len() as u64).to_le_bytes());
     }
 
     pub fn encode(&self, out: &mut Vec<u8>) {
@@ -173,6 +183,11 @@ impl CreditState {
                     out.extend_from_slice(&(reject_code(*r) as u64).to_le_bytes());
                 }
             }
+        }
+        out.extend_from_slice(&(self.demand.len() as u32).to_le_bytes());
+        for (a, asset) in &self.demand {
+            out.extend_from_slice(&a.to_le_bytes());
+            out.extend_from_slice(&asset.to_le_bytes());
         }
     }
 
@@ -222,7 +237,17 @@ impl CreditState {
                 return Err("credit snapshot: duplicate client".into());
             }
         }
+        let nd = r.u32().map_err(bad)? as usize;
+        if nd > r.left() / 12 {
+            return Err("credit snapshot: demand count".into());
+        }
+        let mut demand = BTreeSet::new();
+        for _ in 0..nd {
+            let (a, asset) = (r.u64().map_err(bad)?, r.u32().map_err(bad)?);
+            demand.insert((a, asset));
+        }
         self.slice.restore(&slice)?;
+        self.demand = demand;
         self.next = next;
         self.base = base;
         self.events = events;

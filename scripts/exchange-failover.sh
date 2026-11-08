@@ -15,6 +15,13 @@
 #   - the ledgers' deposit and payout totals equal what the load generator saw
 #     acknowledged (an independent count).
 #
+# With SLICES=1 (or scripts/exchange-slices-failover.sh) it also runs phase 2: matching
+# group 0 runs in credit mode, a slice driver lends and recalls credit, the load enters
+# part of its orders at that group directly (and withdraws large amounts that compete
+# with lent funds), the slice driver is among the processes killed, and the audit reads
+# the group's slice and checks, once the system is at rest, the exact identity that ties
+# the slice to the ledgers (lent funds, slice reports, fills inside the slice).
+#
 #   scripts/exchange-failover.sh                 # 40 s of load, 7 kills, 2 shards, 2 groups
 #   SECS=60 KILLS=14 SHARDS=3 MGROUPS=2 scripts/exchange-failover.sh
 #   PROFILE=debug scripts/exchange-failover.sh   # skip the release build (slower nodes)
@@ -44,8 +51,13 @@ start_audit
 
 ACKED="$TMP/acked"
 "$BIN/exchange-load" deposit --config "$CONF" --ledgers "$ALL_GATEWAYS" --accounts "$ACCOUNTS" --acked "$ACKED"
+LOAD_EXTRA=()
+if [[ "$SLICES" == 1 ]]; then
+  # 60% of the orders for the credit group's symbols go to it directly; withdrawals are big
+  LOAD_EXTRA=(--tier "$ALL_TIER_EX" --slice-pct 60 --withdraw-max 3000000 --chaos "$CHAOS")
+fi
 "$BIN/exchange-load" run --config "$CONF" --ledgers "$ALL_GATEWAYS" --accounts "$ACCOUNTS" --secs "$SECS" --threads "$THREADS" \
-  --acked "$ACKED" >"$TMP/load.out" 2>&1 &
+  --acked "$ACKED" ${LOAD_EXTRA[@]+"${LOAD_EXTRA[@]}"} >"$TMP/load.out" 2>&1 &
 LOAD_PID=$!
 
 # --- kills -----------------------------------------------------------------
@@ -65,7 +77,7 @@ for k in $(seq 1 "$KILLS"); do
     exit 1
   fi
   check_audit_alive
-  m=$(((k - 1) % (MG + NS + 3)))
+  m=$(((k - 1) % (MG + NS + 3 + SLICES)))
   if ((m < MG)); then # a matching group's leader
     g=$m
     L=$(leader_of "$(tier_clients "$g")" || true)
@@ -80,6 +92,8 @@ for k in $(seq 1 "$KILLS"); do
     s=$((k % NS)); kill_pid "forwarder $s" "${FWD_PID[$s]}"; sleep 1; start_fwd "$s"
   elif ((m == MG + 2)); then
     kill_pid "settler" "$SET_PID"; sleep 1; start_set
+  elif ((SLICES == 1 && m == MG + NS + 3)); then
+    kill_pid "slice driver" "$SLICE_PID"; sleep 1; start_slice_driver
   else # a ledger shard's leader
     s=$((m - MG - 3))
     L=$(leader_of "$(led_clients "$s")" || true)
@@ -99,7 +113,9 @@ check_audit_alive
 
 # --- drain and verify ------------------------------------------------------
 echo "draining: cancelling every acknowledged order that is still open"
-"$BIN/exchange-load" drain --config "$CONF" --ledgers "$ALL_GATEWAYS" --acked "$ACKED" --timeout 180
+DRAIN_EXTRA=()
+[[ "$SLICES" == 1 ]] && DRAIN_EXTRA=(--tier "$ALL_TIER_EX")
+"$BIN/exchange-load" drain --config "$CONF" --ledgers "$ALL_GATEWAYS" --acked "$ACKED" --timeout 180 ${DRAIN_EXTRA[@]+"${DRAIN_EXTRA[@]}"}
 # the continuous audit has to have survived all of that
 check_audit_alive
 kill "$AUDIT_PID" 2>/dev/null || true

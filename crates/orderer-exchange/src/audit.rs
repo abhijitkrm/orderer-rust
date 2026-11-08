@@ -14,11 +14,21 @@
 //! Only when every shard has settled every event it is owed (`caught_up`): across
 //! all shards, trades moved exactly what they took and money is conserved
 //! (deposits and credits = holdings + withdrawals + debits).
+//!
+//! With credit slices (phase 2, [`Audit::with_slices`]) the credit group's slice is
+//! read too: it must restore and pass `Slice::check()` with no anomalies at every
+//! round. The exact identity that ties the slice to the ledgers
+//! (`slice holdings - slice flow in + slice flow out = lent - slice-in + slice-out`,
+//! per asset, `CREDIT-SLICES.md` S1) holds only when nothing is in flight, so it is
+//! checked only when the system is at rest: every stream settled, the slice has
+//! settled and reported everything it did, every grant has reached the group, and a
+//! second read of every ledger and of the slice returns exactly the same bytes as
+//! the first. Until then only the per-component checks run.
 
 use crate::gateway::GatewayClient;
 use crate::tierclient::TierClient;
 use orderer_cluster::client::Conn;
-use orderer_ledger::{order_shard, Config, Event, Ledger};
+use orderer_ledger::{order_shard, Config, Event, Ledger, Slice};
 use std::collections::BTreeMap;
 use std::io;
 use std::net::SocketAddr;
@@ -29,6 +39,8 @@ pub struct Report {
     pub violations: Vec<String>,
     /// Every shard has settled every event it is owed, so the equalities were checked.
     pub caught_up: bool,
+    /// With slices: the system was at rest, so the slice identity was checked.
+    pub at_rest: bool,
     pub events: u64,
     pub open_orders: usize,
     pub summary: String,
@@ -48,16 +60,32 @@ pub struct Audit {
     /// The last event index involving a shard, per `(shard, source)`.
     last_for: BTreeMap<(usize, u32), u64>,
     events: u64,
+    slices: Option<SliceAudit>,
 }
 
-fn involves(shard: usize, e: &Event) -> bool {
+/// The credit group the audit reads slices from.
+#[derive(Clone, Copy, Debug)]
+pub struct SliceAudit {
+    /// Index into the audit's `tiers`.
+    pub group_idx: usize,
+    /// The group's stream of slice reports.
+    pub source: u32,
+    /// The group's number (`CreditConfig::group`).
+    pub group: u16,
+}
+
+/// Does stream event `e` concern ledger shard `shard` (of `n`)? Accounts live on
+/// shard `account % n`; slice fees are booked on shard 0.
+fn involves(shard: usize, n: usize, e: &Event) -> bool {
     match *e {
         Event::Trade { buy, sell, .. } => {
             order_shard(buy) as usize == shard || order_shard(sell) as usize == shard
         }
         Event::Closed { order } => order_shard(order) as usize == shard,
-        // phase 2 account events are not about orders
-        _ => false,
+        Event::SliceIn { account, .. }
+        | Event::SliceOut { account, .. }
+        | Event::Returned { account, .. } => account % n as u64 == shard as u64,
+        Event::SliceFee { .. } => shard == 0,
     }
 }
 
@@ -84,7 +112,25 @@ impl Audit {
             scan: BTreeMap::new(),
             last_for: BTreeMap::new(),
             events: 0,
+            slices: None,
         }
+    }
+
+    /// Also audit the credit slice of matching group `sa.group_idx` (phase 2).
+    pub fn with_slices(mut self, sa: SliceAudit) -> Audit {
+        self.slices = Some(sa);
+        self
+    }
+
+    /// The credit slice as the group reports it now (linearizable) and the raw
+    /// state it came from.
+    fn read_slice(&mut self, sa: SliceAudit) -> io::Result<(Slice, crate::server::SliceState)> {
+        let st = self.tiers[sa.group_idx]
+            .slice_state()?
+            .map_err(|r| io::Error::other(format!("slice state: {r:?}")))?;
+        let mut sl = Slice::new((self.cfg)(0), sa.group);
+        sl.restore(&st.snapshot).map_err(io::Error::other)?;
+        Ok((sl, st))
     }
 
     /// Every group's cursor for ledger shard `s`.
@@ -109,8 +155,9 @@ impl Audit {
                     .read(source, from, 4096)?
                     .map_err(|r| io::Error::other(format!("stream {source}: {r:?}")))?;
                 for (idx, ev) in &evs {
-                    for s in 0..self.ledgers.len() {
-                        if involves(s, ev) {
+                    let n = self.ledgers.len();
+                    for s in 0..n {
+                        if involves(s, n, ev) {
                             self.last_for.insert((s, source), *idx);
                         }
                     }
@@ -151,6 +198,30 @@ impl Audit {
             }
             ledgers.push(l);
         }
+        // the slice is read after the ledgers and before the streams are scanned
+        let slice1 = match self.slices {
+            Some(sa) => {
+                let (sl, st) = self.read_slice(sa)?;
+                if let Err(e) = sl.check() {
+                    rep.violations.push(format!("slice: {e}"));
+                }
+                if sl.anomalies() != 0 {
+                    rep.violations
+                        .push(format!("slice: {} anomalies", sl.anomalies()));
+                }
+                Some((sl, st))
+            }
+            None => None,
+        };
+        let snaps1: Vec<Vec<u8>> = if slice1.is_some() {
+            let mut v = Vec::new();
+            for gw in self.ledgers.iter_mut() {
+                v.push(gw.snapshot()?);
+            }
+            v
+        } else {
+            Vec::new()
+        };
         let ends = self.scan_streams()?;
         let mut cursor_after = Vec::new();
         for s in 0..n {
@@ -190,7 +261,61 @@ impl Audit {
         rep.caught_up = caught_up;
         rep.events = self.events;
         rep.open_orders = ledgers.iter().map(|l| l.open_orders()).sum();
-        if caught_up {
+        let mut at_rest = true;
+        if let (Some(sa), Some((slice, st))) = (self.slices, slice1.as_ref()) {
+            // at rest: every stream settled, nothing unreported at the slice or behind
+            // in it, every grant delivered, the group stream fully settled
+            let group_end = ends.get(&sa.source).copied().unwrap_or(0);
+            let grants_in: bool = ledgers.iter().enumerate().all(|(s, l)| {
+                cursor_before[s].get(sa.group_idx).copied().unwrap_or(0) >= l.outbox_next()
+            });
+            at_rest = caught_up
+                && !slice.unreported()
+                && !st.behind
+                && grants_in
+                && st.group_end == group_end;
+            if at_rest {
+                // a second read of everything must be byte-identical: nothing moved
+                let mut same = true;
+                for (s, gw) in self.ledgers.iter_mut().enumerate() {
+                    same &= gw.snapshot()? == snaps1[s];
+                }
+                let (_, st2) = self.read_slice(sa)?;
+                same &= st2.snapshot == st.snapshot && st2.group_end == st.group_end && !st2.behind;
+                at_rest = same;
+            }
+            if at_rest {
+                let eng = slice.engine();
+                for &asset in &self.assets {
+                    let (e_in, e_out) = eng.settled_flow(asset);
+                    let lhs = eng.holdings(asset) as i128 - e_in as i128 + e_out as i128;
+                    let (mut lent, mut s_in, mut s_out) = (0i128, 0i128, 0i128);
+                    for l in &ledgers {
+                        lent += l.lent_total(asset) as i128;
+                        let (_, _, i, o) = l.slice_flow(asset);
+                        s_in += i as i128;
+                        s_out += o as i128;
+                    }
+                    let rhs = lent - s_in + s_out;
+                    if lhs != rhs {
+                        rep.violations.push(format!(
+                            "asset {asset}: slice and ledgers disagree at rest: slice side {lhs} != ledger side {rhs} (lent {lent}, slice-in {s_in}, slice-out {s_out})"
+                        ));
+                    }
+                }
+            }
+        }
+        // The plain equalities hold across ledgers when no money sits in a slice.
+        let slices_empty = match slice1.as_ref() {
+            None => true,
+            Some((sl, _)) => {
+                self.assets.iter().all(|&a| sl.accounts_total(a) == 0)
+                    && ledgers
+                        .iter()
+                        .all(|l| self.assets.iter().all(|&a| l.lent_total(a) == 0))
+            }
+        };
+        if caught_up && at_rest && slices_empty {
             for &asset in &self.assets {
                 let (mut have, mut wd, mut dep, mut inn, mut out, mut ain, mut aout) =
                     (0u128, 0u128, 0u128, 0u128, 0u128, 0u128, 0u128);
@@ -218,12 +343,18 @@ impl Audit {
                 }
             }
         }
+        rep.at_rest = at_rest && caught_up;
         rep.summary = format!(
-            "{} shards, {} events, {} open orders, caught_up={}, marks/outbox: {}",
+            "{} shards, {} events, {} open orders, caught_up={}{}, marks/outbox: {}",
             n,
             self.events,
             rep.open_orders,
             caught_up,
+            if self.slices.is_some() {
+                format!(", slices_at_rest={}", rep.at_rest)
+            } else {
+                String::new()
+            },
             ledgers
                 .iter()
                 .enumerate()
@@ -277,6 +408,15 @@ impl Audit {
             l.restore(&snap).map_err(io::Error::other)?;
             for &(id, _) in acked {
                 if order_shard(id) as usize == s && l.order(id).is_some() {
+                    open.insert(id);
+                }
+            }
+        }
+        // orders entered at the credit group are open in its slice, not in a ledger
+        if let Some(sa) = self.slices {
+            let (sl, _) = self.read_slice(sa)?;
+            for (id, _, _) in sl.orders() {
+                if acked.iter().any(|a| a.0 == id) {
                     open.insert(id);
                 }
             }

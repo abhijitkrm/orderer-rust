@@ -170,3 +170,65 @@ fn the_ledger_refuses_a_settle_that_skips_or_is_out_of_order() {
     assert_eq!(l.apply(&s(8, 9, orders[2])), Outcome::Settled);
     l.check().unwrap();
 }
+
+#[test]
+fn route_settles_equals_the_per_shard_chains() {
+    // random streams over phase 1 and phase 2 events, shards 0..3, marks anywhere
+    let mut x = 0x2545_F491_4F6C_DD1Du64;
+    let mut rnd = |n: u64| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x % n
+    };
+    for _ in 0..300 {
+        let shards = 1 + rnd(4) as usize;
+        let shard_of = |a: u64| (a % shards as u64) as u16;
+        let events: Vec<(u64, Event)> = (1..=40)
+            .map(|i| {
+                let id = |r: u64| ((r % (shards as u64 + 1)) << SHARD_SHIFT) | (1 + r);
+                let e = match rnd(6) {
+                    0 | 1 => Event::Trade {
+                        buy: id(rnd(9)),
+                        sell: id(rnd(9)),
+                        price: 5,
+                        qty: 1,
+                        taker_is_buy: false,
+                    },
+                    2 => Event::Closed { order: id(rnd(9)) },
+                    3 => Event::SliceIn {
+                        account: rnd(7),
+                        asset: 1,
+                        amount: 1,
+                    },
+                    4 => Event::Returned {
+                        account: rnd(7),
+                        asset: 1,
+                        amount: 1,
+                    },
+                    _ => Event::SliceFee {
+                        asset: 2,
+                        amount: 1,
+                    },
+                };
+                (i, e)
+            })
+            .collect();
+        let marks: Vec<u64> = (0..shards).map(|_| rnd(30)).collect();
+        let max = 1 + rnd(8) as usize;
+        let fee_shard = rnd(shards as u64) as u16;
+        let routed = route_settles(3, &marks, events.clone(), max, shard_of, fee_shard);
+        for s in 0..shards {
+            let want = settle_cmds_routed(
+                3,
+                s as u16,
+                marks[s],
+                events.clone(),
+                max,
+                shard_of,
+                fee_shard,
+            );
+            assert_eq!(routed[s], want, "shard {s}");
+        }
+    }
+}

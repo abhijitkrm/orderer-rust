@@ -31,11 +31,11 @@ pub use config::{ConfigError, ExchangeConfig, SymbolCfg};
 pub use gateway::{GatewayClient, GatewayServer, LedgerState, OrderInfo};
 pub use node::{demo_config, LedgerNodeSm, LedgerView, Reply};
 pub use secure::Auth;
-pub use tierclient::TierClient;
+pub use tierclient::{SliceClient, TierClient};
 
 pub use archive::TierView;
 pub use archive::{map_event, ArchiveEgress, ArchiveState, Mapped, Truncated};
-pub use server::{ExchangeClient, ExchangeServer, ForwardAck, Refusal};
+pub use server::{ExchangeClient, ExchangeServer, ForwardAck, Refusal, SliceAnswer, SliceState};
 pub use store::{EventStore, StoreConfig, StoreStats, SyncPolicy};
 pub use tier::{MatchingTierSm, Plugs, TierConfig, TierIntake};
-pub use wire::{decode_forward, encode_forward, Forward};
+pub use wire::{decode_forward, decode_span, encode_forward, encode_span, Forward, Span};

@@ -5,7 +5,8 @@
 //!             --dir DIR --config FILE [--group G] [--retain N]
 //!             [--compact-every N] [--digest-every N] [--fsync on|off|relaxed[:MS]]
 //!
-//! This node is a replica of matching group G (default 0) of the config. Its
+//! This node is a replica of matching group G (default 0) of the config. If the config
+//! names G as its `credit_group`, the group runs in credit mode (phase 2). Its
 //! partition count and stream ids come from the config. The key, if any, is read
 //! from `ORDERER_KEY` (not argv); it authenticates the client port and the
 //! exchange port. The replica transport uses a key derived from it and the config
@@ -149,7 +150,14 @@ fn main() {
             b.build().expect("pipeline")
         },
     );
-    let (sm, view) = (sm.with_group(group, groups), view);
+    let sm = sm.with_group(group, groups);
+    // phase 2: the credit group (config `credit_group`) keeps slices and takes
+    // gateway orders directly
+    let sm = match setup.cfg.credit_config(group, retain) {
+        Some(cc) => sm.with_credit(cc),
+        None => sm,
+    };
+    let (sm, view) = (sm, view);
     let replica = Replica::start(cfg, sm).unwrap_or_else(|e| die(&format!("start: {e}")));
     let _client = ClientServer::start_with_key(client, replica.handle(), key)
         .unwrap_or_else(|e| die(&format!("client port: {e}")));

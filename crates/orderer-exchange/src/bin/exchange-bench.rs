@@ -27,11 +27,19 @@
 //!
 //! The relays (forwarder, settler) and the tick driver must be running; the accounts
 //! must be funded (`exchange-load deposit`). Orders are limit orders near one price,
-//! so they cross and trade. `--mode phase2` is reserved for the credit-slice path,
-//! which has no process-level entry point yet.
+//! so they cross and trade.
+//!
+//! `--mode phase2` enters the orders at the credit group directly (`SliceClient`,
+//! one replicated hop, against slices the accounts must already have: run
+//! `exchange-load lend` first) and measures **order-to-ack**, which here is already
+//! "committed in the matching group's log" (the group answers after applying the
+//! entry). The like-for-like figure in phase 1 is `order-to-in-group`: order-to-ack plus
+//! ack-to-resting, per order, an upper bound on the time to be committed at the group.
+//! In phase 2 only symbols the credit group owns are traded and ack-to-resting is not
+//! reported (it is zero by construction).
 
 use orderer_exchange::cli::{parse_groups, Setup};
-use orderer_exchange::{GatewayClient, Reply, TierClient};
+use orderer_exchange::{GatewayClient, Reply, SliceClient, TierClient};
 use orderer_ledger::{Cmd, Side};
 use std::collections::VecDeque;
 use std::process::exit;
@@ -74,6 +82,8 @@ struct Acked {
     group: usize,
     outbox: u64,
     at: Instant,
+    /// Due time to the ledger's reply.
+    ack_us: u64,
 }
 
 #[derive(Default)]
@@ -142,7 +152,14 @@ fn worker(
     accounts: u64,
     seed: u64,
     session: u64,
+    slice_tier: Option<Vec<std::net::SocketAddr>>,
 ) -> Out {
+    let mut slice: Option<SliceClient> = slice_tier.map(|a| {
+        SliceClient::new(
+            TierClient::with_auth(a, auth.clone()),
+            SliceClient::fresh_id(),
+        )
+    });
     let n = ledgers.len() as u64;
     let mut gws: Vec<GatewayClient> = ledgers
         .into_iter()
@@ -177,6 +194,30 @@ fn worker(
         };
         let price = 95 + rng.below(11);
         let qty = 1 + rng.below(5);
+        if let Some(sc) = slice.as_mut() {
+            let r = sc.enter(account, symbol, side, price, qty, false);
+            let finished = Instant::now();
+            if job.due < warm_until {
+                continue;
+            }
+            out.sent += 1;
+            let queued = began.saturating_duration_since(job.due);
+            if queued > Duration::from_millis(2) {
+                out.late += 1;
+            }
+            out.max_queue_us = out.max_queue_us.max(queued.as_micros() as u64);
+            match r {
+                Ok(Ok(_)) => out
+                    .ack_us
+                    .push(finished.saturating_duration_since(job.due).as_micros() as u64),
+                Ok(Err(_)) => out.rejected += 1,
+                Err(_) => {
+                    out.errors += 1;
+                    let _ = sc.resolve_pending();
+                }
+            }
+            continue;
+        }
         seq[s] += 1;
         let r = gws[s].cmd(
             session + s as u64,
@@ -201,13 +242,14 @@ fn worker(
         out.max_queue_us = out.max_queue_us.max(queued.as_micros() as u64);
         match r {
             Ok(Reply::Reserved { outbox, .. }) => {
-                out.ack_us
-                    .push(finished.saturating_duration_since(job.due).as_micros() as u64);
+                let ack = finished.saturating_duration_since(job.due).as_micros() as u64;
+                out.ack_us.push(ack);
                 out.acked.push(Acked {
                     shard: s,
                     group,
                     outbox,
                     at: finished,
+                    ack_us: ack,
                 });
             }
             Ok(Reply::Rejected(_)) => out.rejected += 1,
@@ -286,8 +328,8 @@ fn main() {
             other => die(&format!("unknown argument {other}")),
         }
     }
-    if mode != "phase1" {
-        die("--mode phase2 is not available: the credit-slice path has no process-level entry point yet (gateway requests for the matching group, entry tag 6, have no network service)");
+    if mode != "phase1" && mode != "phase2" {
+        die("--mode is phase1 or phase2");
     }
     if config.is_empty() || ledgers.is_empty() || tier.is_empty() || rate <= 0.0 {
         die("--config, --ledgers, --tier and --rate are required");
@@ -304,11 +346,25 @@ fn main() {
     {
         die("--ledgers and --tier must list every shard and every group of the config");
     }
+    let phase2 = mode == "phase2";
+    let credit = cfg.credit.map(|c| c.group as usize);
+    if phase2 && credit.is_none() {
+        die("--mode phase2 needs credit_group in the config");
+    }
     let symbols: Vec<(u32, usize)> = cfg
         .symbols
         .iter()
         .map(|s| (s.id, cfg.group_of(s.id) as usize))
+        .filter(|(_, g)| !phase2 || Some(*g) == credit)
         .collect();
+    if symbols.is_empty() {
+        die("the credit group owns no symbol");
+    }
+    let slice_tier = if phase2 {
+        Some(tier_addrs[credit.expect("checked")].clone())
+    } else {
+        None
+    };
 
     let session = (SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -364,8 +420,11 @@ fn main() {
         .map(|k| {
             let (q, done) = (q.clone(), done.clone());
             let (l, a, sy) = (ledger_addrs.clone(), auth.clone(), symbols.clone());
+            let st = slice_tier.clone();
             let sess = (session.wrapping_add(k << 20)) & !0xff;
-            std::thread::spawn(move || worker(q, done, warm_until, l, a, sy, accounts, seed, sess))
+            std::thread::spawn(move || {
+                worker(q, done, warm_until, l, a, sy, accounts, seed, sess, st)
+            })
         })
         .collect();
     let dispatcher_lag_us = disp.join().unwrap_or_else(|_| die("dispatcher panicked"));
@@ -406,12 +465,18 @@ fn main() {
 
     // resting: the first observation that shows the group's cursor past the order
     let mut rest_us = Vec::with_capacity(tot.acked.len());
+    // due time to "committed in the matching group's log" (ack + ack-to-resting)
+    let mut in_group_us = Vec::with_capacity(tot.acked.len());
     let mut unresolved = 0u64;
     for a in &tot.acked {
         let v = &seen[a.shard * groups + a.group];
         let first = v.partition_point(|&(_, c)| c <= a.outbox);
         match v.get(first) {
-            Some((t, _)) => rest_us.push(t.saturating_duration_since(a.at).as_micros() as u64),
+            Some((t, _)) => {
+                let rest = t.saturating_duration_since(a.at).as_micros() as u64;
+                rest_us.push(rest);
+                in_group_us.push(a.ack_us + rest);
+            }
             None => unresolved += 1,
         }
     }
@@ -439,7 +504,10 @@ fn main() {
         );
     }
     report(&label, "order-to-ack", tot.ack_us, csv);
-    report(&label, "ack-to-resting", rest_us, csv);
+    if !phase2 {
+        report(&label, "ack-to-resting", rest_us, csv);
+        report(&label, "order-to-in-group", in_group_us, csv);
+    }
     if unresolved > 0 {
         eprintln!("exchange-bench: {unresolved} acknowledged orders were never seen accepted by matching within 15 s of the end");
     }

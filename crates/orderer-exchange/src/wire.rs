@@ -35,6 +35,35 @@ pub struct Forward {
     pub msgs: Vec<OutMsg>,
 }
 
+/// **Entry tag 5, version 2, span** (the thinned form: a group is sent only the
+/// messages of its own symbols, yet its intake still advances over every outbox
+/// index):
+/// ```text
+///   0   u8   5
+///   1   u8   version (2)
+///   2   u16  ledger shard
+///   4   u64  first outbox index covered
+///   12  u64  end (one past the last index covered)
+///   20  u32  n
+///   24  n x (u32 offset from first | message (30 bytes))   offsets strictly increasing, below end - first
+/// ```
+/// The span covers indices `first..end`; the messages listed are the ones for this
+/// group, every other index in the span is not its concern. The intake applies a
+/// span iff `first` is at most its cursor and `end` is above it (messages below the
+/// cursor are skipped), then moves the cursor to `end`; a span that starts above the
+/// cursor is a gap and is refused. The forwarder is trusted for what it leaves out
+/// exactly as it is for what it sends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub shard: u16,
+    pub first: u64,
+    pub end: u64,
+    pub msgs: Vec<(u64, OutMsg)>,
+}
+
+/// Most outbox indices one span may cover.
+pub const MAX_SPAN: u64 = 1 << 24;
+
 pub struct Rd<'a>(&'a [u8]);
 
 impl<'a> Rd<'a> {
@@ -226,6 +255,52 @@ pub fn decode_forward(b: &[u8]) -> Result<Forward, WireError> {
     Ok(Forward {
         shard,
         first_idx,
+        msgs,
+    })
+}
+
+pub fn encode_span(sp: &Span) -> Vec<u8> {
+    let mut out = Vec::with_capacity(24 + sp.msgs.len() * (4 + MSG_BYTES));
+    out.push(TAG_FORWARD);
+    out.push(2);
+    out.extend_from_slice(&sp.shard.to_le_bytes());
+    out.extend_from_slice(&sp.first.to_le_bytes());
+    out.extend_from_slice(&sp.end.to_le_bytes());
+    out.extend_from_slice(&(sp.msgs.len() as u32).to_le_bytes());
+    for (idx, m) in &sp.msgs {
+        out.extend_from_slice(&((idx - sp.first) as u32).to_le_bytes());
+        put_msg(&mut out, m);
+    }
+    out
+}
+
+pub fn decode_span(b: &[u8]) -> Result<Span, WireError> {
+    let mut r = Rd::new(b);
+    if r.u8()? != TAG_FORWARD || r.u8()? != 2 {
+        return Err(WireError("not a span"));
+    }
+    let shard = r.u16()?;
+    let (first, end) = (r.u64()?, r.u64()?);
+    let n = r.u32()? as usize;
+    if end < first || end - first > MAX_SPAN || n > MAX_BATCH || r.left() != n * (4 + MSG_BYTES) {
+        return Err(WireError("span length"));
+    }
+    let mut msgs = Vec::with_capacity(n);
+    let mut last: Option<u64> = None;
+    for _ in 0..n {
+        let off = r.u32()? as u64;
+        let idx = first + off;
+        if idx >= end || last.is_some_and(|l| idx <= l) {
+            return Err(WireError("span offsets"));
+        }
+        last = Some(idx);
+        msgs.push((idx, get_msg(&mut r)?));
+    }
+    r.done()?;
+    Ok(Span {
+        shard,
+        first,
+        end,
         msgs,
     })
 }

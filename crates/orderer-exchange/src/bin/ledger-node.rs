@@ -3,7 +3,10 @@
 //!
 //!   ledger-node --shard S --id N --members 0=HOST:PORT,... --client HOST:PORT
 //!               --gateway HOST:PORT --dir DIR --config FILE [--compact-every N]
-//!               [--digest-every N] [--fsync on|off|relaxed[:MS]]
+//!               [--digest-every N] [--fsync on|off|relaxed[:MS]] [--stamp]
+//!
+//! With --stamp the serving node stamps client and bare commands with its
+//! wall-clock time (`Cmd::At`), so the ledger clock is the leader's time.
 //!
 //! Reference data is read from the config file (`config.rs`). The key, if any, is
 //! read from `ORDERER_KEY` (not argv); it authenticates the client port and the
@@ -35,6 +38,7 @@ fn main() {
     );
     let mut config = String::new();
     let (mut compact_every, mut digest_every, mut fsync) = (0u64, 0u64, true);
+    let mut stamp = false;
     let mut fsync_interval = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -63,6 +67,7 @@ fn main() {
             }
             "--dir" => dir = v("--dir"),
             "--config" => config = v("--config"),
+            "--stamp" => stamp = true,
             "--compact-every" => {
                 compact_every = v("--compact-every")
                     .parse()
@@ -126,8 +131,9 @@ fn main() {
     let replica = Replica::start(cfg, sm).unwrap_or_else(|e| die(&format!("start: {e}")));
     let _client = ClientServer::start_with_key(client, replica.handle(), key)
         .unwrap_or_else(|e| die(&format!("client port: {e}")));
-    let _gw = GatewayServer::start_with(gateway, replica.handle(), view, setup.auth.clone())
-        .unwrap_or_else(|e| die(&format!("gateway port: {e}")));
+    let _gw =
+        GatewayServer::start_stamped(gateway, replica.handle(), view, setup.auth.clone(), stamp)
+            .unwrap_or_else(|e| die(&format!("gateway port: {e}")));
     println!(
         "ledger-node shard {shard} id {id} ready (client {client}, gateway {gateway}, config {})",
         &orderer_cluster::sha256::hex(&setup.cfg.checksum())[..16]

@@ -10,12 +10,18 @@
 //! # symbol = ID base=ASSET quote=ASSET lot=BASE_ATOMS_PER_QTY [maker_ppm=N taker_ppm=N]
 //! symbol = 10 base=1 quote=2 lot=1000
 //! symbol = 11 base=3 quote=2 lot=10 maker_ppm=100 taker_ppm=300
+//! # optional, phase 2: this matching group runs in credit mode (gateways enter orders
+//! # at it directly against slices the ledgers lend it); settle fills into slices
+//! # every EPOCH applied entries
+//! credit_group    = 0
+//! credit_epoch    = 256
 //! ```
 //!
 //! Everything is an integer; assets are numeric ids (a name table belongs to the
 //! gateway's front end, not to the ledger). A symbol belongs to the matching group
 //! `orderer_cluster::shard::ShardMap::new(matching_groups).group_of(id)`. Stream
-//! ids of group `g` are `g * partitions + partition`.
+//! ids of group `g` are `g * (partitions + 1) + partition`; the slot after the
+//! partitions is the group's own stream of slice reports (credit mode).
 //!
 //! [`ExchangeConfig::checksum`] is a SHA-256 over a canonical rendering (settings in
 //! a fixed order, symbols sorted by id), so spelling, comments and ordering do not
@@ -47,6 +53,15 @@ pub struct ExchangeConfig {
     pub fee_ppm: u32,
     /// Sorted by id.
     pub symbols: Vec<SymbolCfg>,
+    /// Phase 2: the one matching group that runs in credit mode.
+    pub credit: Option<CreditSetting>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CreditSetting {
+    pub group: u32,
+    /// Fills are settled into slices every this many applied entries.
+    pub epoch: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -76,6 +91,7 @@ pub const MAX_LEDGER_SHARDS: u16 = 0x8000;
 impl ExchangeConfig {
     pub fn parse(text: &str) -> Result<ExchangeConfig, ConfigError> {
         let (mut shards, mut groups, mut parts, mut fee) = (None, None, None, None);
+        let (mut credit_group, mut credit_epoch) = (None, None);
         let mut symbols: BTreeMap<u32, SymbolCfg> = BTreeMap::new();
         for (i, raw) in text.lines().enumerate() {
             let line = i + 1;
@@ -98,6 +114,8 @@ impl ExchangeConfig {
                 "matching_groups" => once(&mut groups, num(line, key, value)?)?,
                 "partitions" => once(&mut parts, num(line, key, value)?)?,
                 "fee_ppm" => once(&mut fee, num(line, key, value)?)?,
+                "credit_group" => once(&mut credit_group, num(line, key, value)?)?,
+                "credit_epoch" => once(&mut credit_epoch, num(line, key, value)?)?,
                 "symbol" => {
                     let mut it = value.split_whitespace();
                     let id: u32 = num(line, "symbol id", it.next().unwrap_or(""))?;
@@ -189,6 +207,19 @@ impl ExchangeConfig {
             fee_ppm: u32::try_from(need(fee, "fee_ppm")?)
                 .map_err(|_| ConfigError("fee_ppm is too large".into()))?,
             symbols: symbols.into_values().collect(),
+            credit: match (credit_group, credit_epoch) {
+                (None, None) => None,
+                (Some(g), e) => Some(CreditSetting {
+                    group: u32::try_from(g)
+                        .map_err(|_| ConfigError("credit_group is too large".into()))?,
+                    epoch: e.unwrap_or(256),
+                }),
+                (None, Some(_)) => {
+                    return Err(ConfigError(
+                        "credit_epoch is set without credit_group".into(),
+                    ))
+                }
+            },
         };
         c.validate()?;
         Ok(c)
@@ -246,6 +277,17 @@ impl ExchangeConfig {
                 }
             }
         }
+        if let Some(c) = self.credit {
+            if c.group >= self.matching_groups {
+                return bad(format!(
+                    "credit_group {} but there are {} matching groups",
+                    c.group, self.matching_groups
+                ));
+            }
+            if c.epoch == 0 {
+                return bad("credit_epoch must be at least 1".into());
+            }
+        }
         let map = ShardMap::new(self.matching_groups);
         for g in 0..self.matching_groups {
             if !self.symbols.iter().any(|s| map.group_of(s.id) == g) {
@@ -293,14 +335,49 @@ impl ExchangeConfig {
 
     /// First stream id of group `group`.
     pub fn source_base(&self, group: u32) -> u32 {
-        group * self.partitions
+        group * (self.partitions + 1)
     }
 
-    /// Every stream: `(stream id, group)`, group by group.
+    /// Every partition stream: `(stream id, group)`, group by group.
     pub fn sources(&self) -> Vec<(u32, usize)> {
+        let stride = self.partitions + 1;
         (0..self.matching_groups)
-            .flat_map(|g| (0..self.partitions).map(move |p| (g * self.partitions + p, g as usize)))
+            .flat_map(move |g| (0..self.partitions).map(move |p| (g * stride + p, g as usize)))
             .collect()
+    }
+
+    /// The credit group's stream of slice reports: `(stream id, group)`.
+    pub fn credit_source(&self) -> Option<(u32, usize)> {
+        self.credit.map(|c| {
+            (
+                self.source_base(c.group) + self.partitions,
+                c.group as usize,
+            )
+        })
+    }
+
+    /// What the settler and the audit read: the partition streams, then the credit
+    /// group's report stream if there is one.
+    pub fn settle_sources(&self) -> Vec<(u32, usize)> {
+        let mut v = self.sources();
+        v.extend(self.credit_source());
+        v
+    }
+
+    /// The matching group's credit-mode settings (phase 2) for `group`, if it is
+    /// the credit group.
+    pub fn credit_config(
+        &self,
+        group: u32,
+        retain: usize,
+    ) -> Option<crate::tier::credit::CreditConfig> {
+        let c = self.credit.filter(|c| c.group == group)?;
+        Some(crate::tier::credit::CreditConfig {
+            ledger: self.ledger_config(0),
+            group: group as u16,
+            epoch: c.epoch,
+            retain,
+        })
     }
 
     pub fn canonical(&self) -> String {
@@ -308,6 +385,12 @@ impl ExchangeConfig {
             "orderer-exchange-config/1\nledger_shards={}\nmatching_groups={}\npartitions={}\nfee_ppm={}\n",
             self.ledger_shards, self.matching_groups, self.partitions, self.fee_ppm
         );
+        if let Some(c) = self.credit {
+            s.push_str(&format!(
+                "credit_group={}\ncredit_epoch={}\n",
+                c.group, c.epoch
+            ));
+        }
         for y in &self.symbols {
             s.push_str(&format!(
                 "symbol={} base={} quote={} lot={}",
@@ -369,8 +452,8 @@ symbol = 15 base=7 quote=2 lot=1
         assert_eq!(l.symbols[&10].lot, 1000);
         assert_eq!(l.fees[&11], (100, 300));
         assert_eq!(c.sources().len(), 8);
-        assert_eq!(c.sources()[5], (5, 1));
-        assert_eq!(c.source_base(1), 4);
+        assert_eq!(c.sources()[5], (6, 1));
+        assert_eq!(c.source_base(1), 5);
         for s in &c.symbols {
             assert!(c.group_of(s.id) < 2);
         }

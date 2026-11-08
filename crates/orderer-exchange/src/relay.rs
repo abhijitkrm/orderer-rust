@@ -6,7 +6,9 @@
 use crate::gateway::GatewayClient;
 use crate::node::Reply;
 use crate::tierclient::TierClient;
-use orderer_ledger::{settle_cmds, Cmd};
+use orderer_cluster::shard::ShardMap;
+use orderer_ledger::policy::{plan, PolicyConfig, PolicyState};
+use orderer_ledger::{route_settles, Cmd, Config, Ledger, OutMsg, Slice};
 use std::io;
 
 /// Outcome of one relay step, for logging and for the caller's idle sleep.
@@ -37,6 +39,54 @@ pub struct ForwarderRelay {
     /// duplicates would deliver. The intake must make both no-ops.
     pub chaos: u32,
     sends: u32,
+    /// Send each group only the messages of its own symbols (spans, `wire::Span`).
+    thin: Option<Thinning>,
+}
+
+/// Which group a forwarded message is for.
+#[derive(Clone, Copy, Debug)]
+pub struct Thinning {
+    pub map: ShardMap,
+    /// The group in credit mode, the only one that takes grants and recalls.
+    pub credit_group: Option<usize>,
+}
+
+impl Thinning {
+    pub fn owns(&self, group: usize, m: &OutMsg) -> bool {
+        match *m {
+            OutMsg::Submit { symbol, .. }
+            | OutMsg::SubmitIoc { symbol, .. }
+            | OutMsg::Cancel { symbol, .. } => self.map.group_of(symbol) as usize == group,
+            OutMsg::Grant { .. } | OutMsg::Recall { .. } => self.credit_group == Some(group),
+        }
+    }
+}
+
+/// `(first index, next index, (index, message) pairs)` of a thinned window.
+pub type ThinSpan = (u64, u64, Vec<(u64, OutMsg)>);
+
+/// The span to send group `group` whose intake is at `have`, from an outbox window:
+/// `msgs[0]` has outbox index `first` (`have >= first`). `None` when the group is
+/// already past the window. The span covers `have..first + msgs.len()`; its messages
+/// are the window's messages for this group at or after `have`.
+pub fn thin_span(
+    t: &Thinning,
+    group: usize,
+    have: u64,
+    first: u64,
+    msgs: &[OutMsg],
+) -> Option<ThinSpan> {
+    let skip = have.checked_sub(first)? as usize;
+    if skip >= msgs.len() {
+        return None;
+    }
+    let own = msgs[skip..]
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| t.owns(group, m))
+        .map(|(i, m)| (have + i as u64, *m))
+        .collect();
+    Some((have, first + msgs.len() as u64, own))
 }
 
 impl ForwarderRelay {
@@ -47,7 +97,16 @@ impl ForwarderRelay {
             batch: 256,
             chaos: 0,
             sends: 0,
+            thin: None,
         }
+    }
+
+    /// Thin the outbox per group: a group receives only its own messages, yet its
+    /// intake cursor still advances over every index (a span). Cuts the apply work
+    /// and bandwidth of every group to its own share of the outbox.
+    pub fn thinned(mut self, t: Thinning) -> ForwarderRelay {
+        self.thin = Some(t);
+        self
     }
 
     /// `tiers[g]` is the client of matching group `g`.
@@ -96,6 +155,41 @@ impl ForwarderRelay {
                 continue; // this group is already past the window
             }
             let (idx, part) = (first + skip as u64, &msgs[skip..]);
+            if let Some(t) = self.thin {
+                let (_, end, own) =
+                    thin_span(&t, g, idx, first, &msgs).expect("the group is inside the window");
+                let chaotic = self.chaos > 0 && (self.sends + 1) % self.chaos == 0;
+                if chaotic && end > idx + 1 {
+                    // a span that skips ahead of the group's cursor: must be refused
+                    let ahead: Vec<(u64, OutMsg)> =
+                        own.iter().filter(|(i, _)| *i > idx).copied().collect();
+                    let _ = tier.forward_span(self.shard, idx + 1, end, &ahead);
+                }
+                let ack = match tier.forward_span(self.shard, idx, end, &own)? {
+                    Ok(a) => a,
+                    Err(r) => {
+                        self.known[g] = None;
+                        return Err(io::Error::other(format!(
+                            "group {g}: forward refused: {r:?}"
+                        )));
+                    }
+                };
+                self.sends += 1;
+                if chaotic {
+                    // the same span again, and one that starts below the group's cursor
+                    // (overlapping what it has): both must change nothing
+                    let _ = tier.forward_span(self.shard, idx, end, &own);
+                    if let Some((a, b, o)) = thin_span(&t, g, first, first, &msgs) {
+                        if a < idx {
+                            let _ = tier.forward_span(self.shard, a, b, &o);
+                        }
+                    }
+                }
+                self.known[g] = if ack.gap { None } else { Some(ack.cursor) };
+                moved += own.len();
+                gaps += ack.gap as usize;
+                continue;
+            }
             let ack = match tier.forward(self.shard, idx, part)? {
                 Ok(a) => a,
                 Err(r) => {
@@ -191,10 +285,21 @@ impl SettlerRelay {
                 continue;
             };
             let mut all_ok = true;
+            let nshards = ledgers.len() as u64;
+            let marks_j: Vec<u64> = marks.iter().map(|m| m[j]).collect();
+            // one pass over the events for every shard (accounts live on shard
+            // `account % shards`; slice fees are booked on shard 0)
+            let chains = route_settles(
+                source,
+                &marks_j,
+                evs,
+                self.batch as usize,
+                |a| (a % nshards) as u16,
+                0,
+            );
             for (k, ledger) in ledgers.iter_mut().enumerate() {
                 let shard = self.shards[k];
-                let cmds =
-                    settle_cmds(source, shard, marks[k][j], evs.clone(), self.batch as usize);
+                let cmds = &chains[k];
                 if cmds.is_empty() {
                     continue;
                 }
@@ -204,7 +309,7 @@ impl SettlerRelay {
                 }
                 // One log entry for the whole chain, applied in order: a settle that
                 // is refused as a gap makes the rest of the chain gaps too.
-                match ledger.raw_batch(&cmds) {
+                match ledger.raw_batch(cmds) {
                     Ok(replies) => {
                         for (cmd, reply) in cmds.iter().zip(replies) {
                             match reply {
@@ -266,5 +371,107 @@ impl TickRelay {
                 .unwrap_or(0)),
             _ => Ok(0),
         }
+    }
+}
+
+/// What one [`SliceDriver`] step did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DriverStep {
+    pub lends: usize,
+    pub recalls: usize,
+    /// Commands the ledger refused (a lend with too little `available`, say).
+    pub refused: usize,
+    pub ticked: bool,
+}
+
+/// Drives credit slices (phase 2) from outside: reads the credit group's slice and
+/// every ledger shard, runs [`policy::plan`](orderer_ledger::policy::plan) and
+/// issues the `Lend` and `Recall` commands it proposes, then asks the group to close
+/// its credit epoch (a quiet group has no entries to count).
+///
+/// Memory-less in the sense that matters: its [`PolicyState`] is only the idle
+/// clocks, and the ledger enforces everything that protects money (`available` is
+/// checked on a lend; a recall returns only uncommitted credit), so a crashed,
+/// restarted or duplicated driver costs at most an extra chunk lent or an early
+/// recall, never a wrong balance. The *demand* it reacts to is the group's own list of
+/// accounts refused for lack of credit (replicated state, cleared by the grant that
+/// answers it). Credit already granted by the ledger but not yet accepted by the
+/// group counts as credit, so a slow forwarder does not make the driver lend twice.
+pub struct SliceDriver {
+    pub cfg: PolicyConfig,
+    states: Vec<PolicyState>,
+    /// The credit group's number (see `CreditConfig::group`).
+    pub group: u16,
+    /// Close the credit epoch each step.
+    pub tick: bool,
+}
+
+impl SliceDriver {
+    pub fn new(cfg: PolicyConfig, shards: usize, group: u16) -> SliceDriver {
+        SliceDriver {
+            cfg,
+            states: vec![PolicyState::new(); shards],
+            group,
+            tick: true,
+        }
+    }
+
+    /// One look and its commands. `now_ns` is any monotonic clock (the policy's
+    /// `idle_ns` is in the same unit).
+    pub fn step(
+        &mut self,
+        ledgers: &mut [GatewayClient],
+        tier: &mut TierClient,
+        ledger_cfg: &dyn Fn(u16) -> Config,
+        now_ns: u64,
+    ) -> io::Result<DriverStep> {
+        let refused = |what: &str, r| io::Error::other(format!("{what}: refused: {r:?}"));
+        let st = tier.slice_state()?.map_err(|r| refused("slice state", r))?;
+        let mut slice = Slice::new(ledger_cfg(0), self.group);
+        slice.restore(&st.snapshot).map_err(io::Error::other)?;
+        let n = ledgers.len() as u64;
+        let mut step = DriverStep::default();
+        for (s, gw) in ledgers.iter_mut().enumerate() {
+            let snap = gw.snapshot()?;
+            let mut l = Ledger::new(ledger_cfg(s as u16));
+            l.restore(&snap).map_err(io::Error::other)?;
+            let cursor = tier.cursor(s as u16)?.map_err(|r| refused("cursor", r))?;
+            let mut pending: std::collections::BTreeMap<(u64, u32), u128> = Default::default();
+            let (base, msgs) = l.outbox();
+            for (i, m) in msgs.enumerate() {
+                if let OutMsg::Grant {
+                    account,
+                    asset,
+                    amount,
+                } = *m
+                {
+                    if base + i as u64 >= cursor {
+                        *pending.entry((account, asset)).or_default() += amount;
+                    }
+                }
+            }
+            let credit = |a: u64, asset: u32| -> Option<u128> {
+                Some(slice.available(a, asset) + pending.get(&(a, asset)).copied().unwrap_or(0))
+            };
+            let demand: Vec<(u64, u32)> = st
+                .demand
+                .iter()
+                .copied()
+                .filter(|(a, _)| a % n == s as u64)
+                .collect();
+            for c in plan(&self.cfg, &mut self.states[s], &l, &credit, &demand, now_ns) {
+                let is_lend = matches!(c, Cmd::Lend { .. });
+                match gw.raw(&c)? {
+                    Reply::Rejected(_) => step.refused += 1,
+                    _ if is_lend => step.lends += 1,
+                    _ => step.recalls += 1,
+                }
+            }
+        }
+        if self.tick {
+            tier.tick()?.map_err(|r| refused("tick", r))?;
+            step.ticked = true;
+        }
+        Ok(step)
     }
 }

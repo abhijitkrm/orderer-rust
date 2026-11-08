@@ -22,7 +22,7 @@ pub mod credit;
 
 use crate::archive::{ArchiveEgress, ArchiveState, Shared, TierView};
 use crate::wire::{
-    decode_forward, decode_slice_req, Rd, SliceBody, TAG_EPOCH, TAG_FORWARD, TAG_SLICE,
+    decode_forward, decode_slice_req, decode_span, Rd, SliceBody, TAG_EPOCH, TAG_FORWARD, TAG_SLICE,
 };
 use credit::{CreditConfig, CreditState, SharedCredit};
 use orderer::{EventDigest, Initial, PartitionMap, Pipeline};
@@ -64,6 +64,11 @@ impl TierIntake {
         } else {
             Accept::Gap
         }
+    }
+    /// Move the cursor of `shard` up to `to` (never down).
+    pub(crate) fn advance(&mut self, shard: u16, to: u64) {
+        let c = self.cursor.entry(shard).or_insert(0);
+        *c = (*c).max(to);
     }
     fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&(self.cursor.len() as u32).to_le_bytes());
@@ -220,70 +225,35 @@ impl<C: MatchingCore> MatchingTierSm<C> {
                 if intake.accept(f.shard, f.first_idx.wrapping_add(i as u64)) != Accept::Applied {
                     continue;
                 }
-                let foreign =
-                    |symbol: u32| self.owner.is_some_and(|(map, g)| map.group_of(symbol) != g);
-                match *m {
-                    OutMsg::Submit { symbol, .. }
-                    | OutMsg::SubmitIoc { symbol, .. }
-                    | OutMsg::Cancel { symbol, .. }
-                        if foreign(symbol) => {}
-                    OutMsg::Submit {
-                        order,
-                        symbol,
-                        side,
-                        price,
-                        qty,
-                    } => cmds.push(new_order(
-                        &mut archive.sides,
-                        order,
-                        symbol,
-                        side,
-                        price,
-                        qty,
-                        Tif::Gtc,
-                    )),
-                    // An immediate-or-cancel order: what does not trade is closed by
-                    // the matcher, which the archive turns into a `Closed` event.
-                    OutMsg::SubmitIoc {
-                        order,
-                        symbol,
-                        side,
-                        price,
-                        qty,
-                    } => cmds.push(new_order(
-                        &mut archive.sides,
-                        order,
-                        symbol,
-                        side,
-                        price,
-                        qty,
-                        Tif::Ioc,
-                    )),
-                    OutMsg::Cancel { order, symbol } => {
-                        cmds.push((symbol, Command::Cancel { order_id: order }));
-                    }
-                    // Credit slices (phase 2) exist in credit mode only.
-                    OutMsg::Grant {
-                        account,
-                        asset,
-                        amount,
-                    } => {
-                        if let Some(c) = credit.as_mut() {
-                            c.slice.grant(account, asset, amount);
-                        }
-                    }
-                    OutMsg::Recall {
-                        account,
-                        asset,
-                        amount,
-                    } => {
-                        if let Some(c) = credit.as_mut() {
-                            let ev = c.slice.recall(account, asset, amount);
-                            c.push(ev);
-                        }
-                    }
+                handle_msg(self.owner, &mut archive, &mut credit, m, &mut cmds);
+            }
+        }
+        self.submit(index, cmds);
+    }
+
+    /// A thinned forward (tag 5, version 2): see `wire::Span`. Applies the messages
+    /// at or above the intake cursor, then moves the cursor over the whole span.
+    fn apply_span(&mut self, index: Index, data: &[u8]) {
+        let Ok(sp) = decode_span(data) else {
+            self.bad_forwards += 1;
+            return;
+        };
+        let mut cmds = Vec::new();
+        {
+            let mut intake = self.intake.lock().expect("intake lock");
+            let mut archive = self.archive.lock().expect("archive lock");
+            let mut credit = self.credit.lock().expect("credit lock");
+            let cur = intake.cursor(sp.shard);
+            if sp.first > cur || sp.end <= cur {
+                // a gap (skipped ahead) or a span already covered: nothing changes
+                return;
+            }
+            for (idx, m) in &sp.msgs {
+                if *idx >= cur {
+                    handle_msg(self.owner, &mut archive, &mut credit, m, &mut cmds);
                 }
             }
+            intake.advance(sp.shard, sp.end);
         }
         self.submit(index, cmds);
     }
@@ -355,7 +325,19 @@ impl<C: MatchingCore> MatchingTierSm<C> {
                         ));
                         Ok(order)
                     }
-                    Err(r) => Err(r),
+                    Err(r) => {
+                        if r == orderer_ledger::Reject::Insufficient {
+                            if let Some(sym) = c.slice.engine().config().symbols.get(&symbol) {
+                                let asset = if side == Side::Buy {
+                                    sym.quote
+                                } else {
+                                    sym.base
+                                };
+                                c.demand.insert((account, asset));
+                            }
+                        }
+                        Err(r)
+                    }
                 },
                 SliceBody::Cancel { account, order } => match c.slice.cancel(account, order) {
                     Ok(()) => {
@@ -438,6 +420,81 @@ impl<C: MatchingCore> MatchingTierSm<C> {
     }
 }
 
+/// What one forwarded message does: an order or cancel for a symbol this group
+/// does not own is consumed; Grant and Recall act on the credit slice (credit
+/// mode only).
+fn handle_msg(
+    owner: Option<(orderer_cluster::shard::ShardMap, u32)>,
+    archive: &mut crate::archive::ArchiveState,
+    credit: &mut Option<CreditState>,
+    m: &OutMsg,
+    cmds: &mut Vec<(orderer_core::Symbol, Command)>,
+) {
+    let foreign = |symbol: u32| owner.is_some_and(|(map, g)| map.group_of(symbol) != g);
+    match *m {
+        OutMsg::Submit { symbol, .. }
+        | OutMsg::SubmitIoc { symbol, .. }
+        | OutMsg::Cancel { symbol, .. }
+            if foreign(symbol) => {}
+        OutMsg::Submit {
+            order,
+            symbol,
+            side,
+            price,
+            qty,
+        } => cmds.push(new_order(
+            &mut archive.sides,
+            order,
+            symbol,
+            side,
+            price,
+            qty,
+            Tif::Gtc,
+        )),
+        // An immediate-or-cancel order: what does not trade is closed by the
+        // matcher, which the archive turns into a `Closed` event.
+        OutMsg::SubmitIoc {
+            order,
+            symbol,
+            side,
+            price,
+            qty,
+        } => cmds.push(new_order(
+            &mut archive.sides,
+            order,
+            symbol,
+            side,
+            price,
+            qty,
+            Tif::Ioc,
+        )),
+        OutMsg::Cancel { order, symbol } => {
+            cmds.push((symbol, Command::Cancel { order_id: order }));
+        }
+        // Credit slices (phase 2) exist in credit mode only.
+        OutMsg::Grant {
+            account,
+            asset,
+            amount,
+        } => {
+            if let Some(c) = credit.as_mut() {
+                c.slice.grant(account, asset, amount);
+                c.demand.remove(&(account, asset));
+            }
+        }
+        OutMsg::Recall {
+            account,
+            asset,
+            amount,
+        } => {
+            if let Some(c) = credit.as_mut() {
+                let ev = c.slice.recall(account, asset, amount);
+                c.push(ev);
+            }
+        }
+    }
+}
+
 /// The matcher command for an order entering the book; records the order's side
 /// for the archive. A price above `i64::MAX` becomes -1, which the matcher rejects.
 fn new_order(
@@ -461,6 +518,9 @@ fn new_order(
 impl<C: MatchingCore> StateMachine for MatchingTierSm<C> {
     fn apply(&mut self, index: Index, entry: &Entry) {
         match entry.data.first() {
+            Some(&TAG_FORWARD) if entry.data.get(1) == Some(&2) => {
+                self.apply_span(index, &entry.data)
+            }
             Some(&TAG_FORWARD) => self.apply_forward(index, &entry.data),
             Some(&TAG_SLICE) => self.apply_slice_req(index, &entry.data),
             Some(&TAG_EPOCH) => {

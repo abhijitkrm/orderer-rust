@@ -6,6 +6,10 @@
 //!   (forwarder and settler also take --chaos N: fault injection, see relay.rs)
 //!   exchange-relay tick      --config FILE --ledgers "A,B,C;D,E,F" [--interval-ms 200]
 //!                            [--sweep-every-ms 2000] [--max-age-ms 5000] [--retry-ms 5000]
+//!   exchange-relay slice-driver --config FILE --ledgers "A,B,C;D,E,F" --tier "A,B,C;D,E,F"
+//!                            [--interval-ms 250] [--chunk N] [--low-water-pct 25]
+//!                            [--idle-ms 0] [--account-cap N] [--max-actions 64]
+//!   (forwarder also takes --no-thin: send every group the whole outbox)
 //!
 //! `--ledger` lists one shard's gateway addresses and `--ledgers` one list per
 //! shard (separated by `;`, in shard order); `--tier` lists the matching nodes'
@@ -15,8 +19,9 @@
 //! The key, if any, is read from `ORDERER_KEY`.
 
 use orderer_exchange::cli::{parse_addrs, parse_groups, Setup};
-use orderer_exchange::relay::{ForwarderRelay, SettlerRelay, TickRelay};
+use orderer_exchange::relay::{ForwarderRelay, SettlerRelay, SliceDriver, Thinning, TickRelay};
 use orderer_exchange::{GatewayClient, TierClient};
+use orderer_ledger::policy::PolicyConfig;
 use std::process::exit;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -40,6 +45,9 @@ fn main() {
     let (mut interval, mut sweep_every, mut max_age, mut retry) =
         (200u64, 2000u64, 5000u64, 5000u64);
     let mut chaos = 0u32;
+    let mut no_thin = false;
+    let (mut chunk, mut low_water, mut idle_ms, mut account_cap, mut max_actions) =
+        (10_000_000u128, 25u32, 0u64, None::<u128>, 64usize);
     while let Some(a) = args.next() {
         let mut v = |n: &str| {
             args.next()
@@ -65,6 +73,26 @@ fn main() {
                 max_age = v("--max-age-ms")
                     .parse()
                     .unwrap_or_else(|_| die("--max-age-ms"))
+            }
+            "--no-thin" => no_thin = true,
+            "--chunk" => chunk = v("--chunk").parse().unwrap_or_else(|_| die("--chunk")),
+            "--low-water-pct" => {
+                low_water = v("--low-water-pct")
+                    .parse()
+                    .unwrap_or_else(|_| die("--low-water-pct"))
+            }
+            "--idle-ms" => idle_ms = v("--idle-ms").parse().unwrap_or_else(|_| die("--idle-ms")),
+            "--account-cap" => {
+                account_cap = Some(
+                    v("--account-cap")
+                        .parse()
+                        .unwrap_or_else(|_| die("--account-cap")),
+                )
+            }
+            "--max-actions" => {
+                max_actions = v("--max-actions")
+                    .parse()
+                    .unwrap_or_else(|_| die("--max-actions"))
             }
             "--chaos" => chaos = v("--chaos").parse().unwrap_or_else(|_| die("--chaos")),
             "--retry-ms" => {
@@ -118,6 +146,12 @@ fn main() {
             );
             let mut t = tier_clients(&tier);
             let mut r = ForwarderRelay::new(shard, t.len());
+            if !no_thin && cfg.matching_groups > 1 {
+                r = r.thinned(Thinning {
+                    map: cfg.shard_map(),
+                    credit_group: cfg.credit.map(|c| c.group as usize),
+                });
+            }
             r.chaos = chaos;
             let (mut moved, mut gaps, mut errs) = (0usize, 0usize, 0usize);
             println!("forwarder shard {shard} running ({} groups)", t.len());
@@ -147,13 +181,13 @@ fn main() {
         "settler" => {
             let mut gws = ledger_clients(&ledgers);
             let mut t = tier_clients(&tier);
-            let mut r = SettlerRelay::new((0..cfg.ledger_shards).collect(), cfg.sources());
+            let mut r = SettlerRelay::new((0..cfg.ledger_shards).collect(), cfg.settle_sources());
             r.chaos = chaos;
             let (mut moved, mut gaps, mut errs) = (0usize, 0usize, 0usize);
             println!(
                 "settler running ({} shards, {} streams)",
                 gws.len(),
-                cfg.sources().len()
+                cfg.settle_sources().len()
             );
             loop {
                 match r.step(&mut gws, &mut t) {
@@ -174,6 +208,54 @@ fn main() {
                     println!("settler: settled {moved}, gaps {gaps}, errors {errs}");
                     last_log = Instant::now();
                 }
+            }
+        }
+        "slice-driver" => {
+            let Some(credit) = cfg.credit else {
+                die("the config has no credit_group: nothing to drive");
+            };
+            let mut gws = ledger_clients(&ledgers);
+            let mut ts = tier_clients(&tier);
+            let mut assets: Vec<u32> = cfg.symbols.iter().flat_map(|s| [s.base, s.quote]).collect();
+            assets.sort_unstable();
+            assets.dedup();
+            let pol = PolicyConfig {
+                chunk: assets.iter().map(|a| (*a, chunk)).collect(),
+                low_water_pct: low_water,
+                account_cap: account_cap
+                    .map(|c| assets.iter().map(|a| (*a, c)).collect())
+                    .unwrap_or_default(),
+                group_cap: Default::default(),
+                idle_ns: idle_ms * 1_000_000,
+                max_actions,
+            };
+            let mut d = SliceDriver::new(pol, gws.len(), credit.group as u16);
+            let c2 = cfg.clone();
+            let ledger_cfg = move |s: u16| c2.ledger_config(s);
+            let (mut lends, mut recalls, mut refused, mut errs) = (0usize, 0usize, 0usize, 0usize);
+            let t0 = Instant::now();
+            println!("slice-driver for credit group {} running", credit.group);
+            loop {
+                let now = t0.elapsed().as_nanos() as u64;
+                match d.step(&mut gws, &mut ts[credit.group as usize], &ledger_cfg, now) {
+                    Ok(s) => {
+                        lends += s.lends;
+                        recalls += s.recalls;
+                        refused += s.refused;
+                    }
+                    Err(e) => {
+                        errs += 1;
+                        eprintln!("slice-driver: {e}");
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
+                if last_log.elapsed() > Duration::from_secs(5) {
+                    println!(
+                        "slice-driver: lent {lends}, recalled {recalls}, refused {refused}, errors {errs}"
+                    );
+                    last_log = Instant::now();
+                }
+                std::thread::sleep(Duration::from_millis(interval));
             }
         }
         "tick" => {
