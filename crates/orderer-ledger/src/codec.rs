@@ -13,13 +13,13 @@
 //!   9 Sweep     max_age_ns u64 | retry_ns u64 | max u32
 //!  10 Adjust    account u64 | asset u32 | credit u8 | amount u128 | reason u32 | external_id u64
 //!  11 FeeWithdraw asset u32 | amount u128 | external_id u64
-//!  12 Lend      account u64 | asset u32 | amount u128            (phase 2)
-//!  13 Recall    account u64 | asset u32 | amount u128            (phase 2)
+//!  12 Lend      group u16 | account u64 | asset u32 | amount u128   (phase 2)
+//!  13 Recall    group u16 | account u64 | asset u32 | amount u128   (phase 2)
 //!  14 ReserveIoc same layout as Reserve (immediate-or-cancel; Reserve, tag 2, is GTC)
 //!  20 At        ts_ns u64 | one command (not an At): the leader's time sidecar
 //! A trade event (kind 1) ends with `taker_is_buy u8` (changed in step 4; the
 //! other layouts are unchanged). Phase 2 adds settle event kinds
-//! 3 SliceIn, 4 SliceOut, 6 Returned (`account u64 | asset u32 | amount u128`)
+//! 3 SliceIn, 4 SliceOut, 6 Returned (`group u16 | account u64 | asset u32 | amount u128`)
 //! and 5 SliceFee (`asset u32 | amount u128`).
 
 use crate::ledger::*;
@@ -182,21 +182,25 @@ pub fn encode_cmd(c: &Cmd) -> Vec<u8> {
                     w.u64(order);
                 }
                 Event::SliceIn {
+                    group,
                     account,
                     asset,
                     amount,
                 } => {
                     w.u8(3);
+                    w.u16(group);
                     w.u64(account);
                     w.u32(asset);
                     w.u128(amount);
                 }
                 Event::SliceOut {
+                    group,
                     account,
                     asset,
                     amount,
                 } => {
                     w.u8(4);
+                    w.u16(group);
                     w.u64(account);
                     w.u32(asset);
                     w.u128(amount);
@@ -207,11 +211,13 @@ pub fn encode_cmd(c: &Cmd) -> Vec<u8> {
                     w.u128(amount);
                 }
                 Event::Returned {
+                    group,
                     account,
                     asset,
                     amount,
                 } => {
                     w.u8(6);
+                    w.u16(group);
                     w.u64(account);
                     w.u32(asset);
                     w.u128(amount);
@@ -280,21 +286,25 @@ pub fn encode_cmd(c: &Cmd) -> Vec<u8> {
             w.u64(external_id);
         }
         Cmd::Lend {
+            group,
             account,
             asset,
             amount,
         } => {
             w.u8(12);
+            w.u16(group);
             w.u64(account);
             w.u32(asset);
             w.u128(amount);
         }
         Cmd::Recall {
+            group,
             account,
             asset,
             amount,
         } => {
             w.u8(13);
+            w.u16(group);
             w.u64(account);
             w.u32(asset);
             w.u128(amount);
@@ -356,11 +366,13 @@ pub fn decode_cmd(b: &[u8]) -> Result<Cmd, DecodeError> {
                 },
                 2 => Event::Closed { order: r.u64()? },
                 3 => Event::SliceIn {
+                    group: r.u16()?,
                     account: r.u64()?,
                     asset: r.u32()?,
                     amount: r.u128()?,
                 },
                 4 => Event::SliceOut {
+                    group: r.u16()?,
                     account: r.u64()?,
                     asset: r.u32()?,
                     amount: r.u128()?,
@@ -370,6 +382,7 @@ pub fn decode_cmd(b: &[u8]) -> Result<Cmd, DecodeError> {
                     amount: r.u128()?,
                 },
                 6 => Event::Returned {
+                    group: r.u16()?,
                     account: r.u64()?,
                     asset: r.u32()?,
                     amount: r.u128()?,
@@ -414,11 +427,13 @@ pub fn decode_cmd(b: &[u8]) -> Result<Cmd, DecodeError> {
             external_id: r.u64()?,
         },
         12 => Cmd::Lend {
+            group: r.u16()?,
             account: r.u64()?,
             asset: r.u32()?,
             amount: r.u128()?,
         },
         13 => Cmd::Recall {
+            group: r.u16()?,
             account: r.u64()?,
             asset: r.u32()?,
             amount: r.u128()?,
@@ -435,6 +450,9 @@ const MAGIC: &[u8; 4] = b"LDG2";
 /// Written once phase 2 state exists: `LDG2` plus a trailing slice section
 /// (`lent` entries, then the four flow maps).
 const MAGIC3: &[u8; 4] = b"LDG3";
+/// `LDG3` with credit groups: the `lent` entries carry a group, and a per-group flow
+/// section follows the four totals. `LDG3` is still read (everything is group 0).
+const MAGIC4: &[u8; 4] = b"LDG4";
 
 fn put_map(w: &mut W, m: &BTreeMap<AssetId, Amount>) {
     w.u32(m.len() as u32);
@@ -460,7 +478,7 @@ impl Ledger {
     pub fn snapshot(&self) -> Vec<u8> {
         let mut w = W(Vec::new());
         let v3 = self.has_slice_state();
-        w.0.extend_from_slice(if v3 { MAGIC3 } else { MAGIC });
+        w.0.extend_from_slice(if v3 { MAGIC4 } else { MAGIC });
         w.u16(self.cfg.shard);
         w.u64(self.next_order);
         w.u64(self.outbox_base);
@@ -523,21 +541,25 @@ impl Ledger {
                     w.u32(symbol);
                 }
                 OutMsg::Grant {
+                    group,
                     account,
                     asset,
                     amount,
                 } => {
                     w.u8(3);
+                    w.u16(group);
                     w.u64(account);
                     w.u32(asset);
                     w.u128(amount);
                 }
                 OutMsg::Recall {
+                    group,
                     account,
                     asset,
                     amount,
                 } => {
                     w.u8(4);
+                    w.u16(group);
                     w.u64(account);
                     w.u32(asset);
                     w.u128(amount);
@@ -587,10 +609,11 @@ impl Ledger {
             w.u32(a.reason);
         }
         if v3 {
-            w.u32(self.lent.len() as u32);
-            for ((a, asset), v) in self.lent.iter() {
+            w.u32(self.lent_g.len() as u32);
+            for ((a, asset, group), v) in self.lent_g.iter() {
                 w.u64(*a);
                 w.u32(*asset);
+                w.u16(*group);
                 w.u128(*v);
             }
             for m in [
@@ -600,6 +623,14 @@ impl Ledger {
                 &self.slice_out,
             ] {
                 put_map(&mut w, m);
+            }
+            w.u32(self.group_flow.len() as u32);
+            for ((asset, group), f) in &self.group_flow {
+                w.u32(*asset);
+                w.u16(*group);
+                for v in [f.granted, f.returned, f.slice_in, f.slice_out] {
+                    w.u128(v);
+                }
             }
         }
         w.0
@@ -627,9 +658,10 @@ impl Ledger {
 
     pub(crate) fn parse(cfg: Config, data: &[u8]) -> Result<Ledger, DecodeError> {
         let mut r = R(data);
-        let v3 = match r.take(4)? {
-            m if m == MAGIC => false,
-            m if m == MAGIC3 => true,
+        let (v3, v4) = match r.take(4)? {
+            m if m == MAGIC => (false, false),
+            m if m == MAGIC3 => (true, false),
+            m if m == MAGIC4 => (true, true),
             _ => return Err(DecodeError("bad magic")),
         };
         if r.u16()? != cfg.shard {
@@ -689,11 +721,13 @@ impl Ledger {
                     qty: r.u64()?,
                 },
                 3 => OutMsg::Grant {
+                    group: r.u16()?,
                     account: r.u64()?,
                     asset: r.u32()?,
                     amount: r.u128()?,
                 },
                 4 => OutMsg::Recall {
+                    group: r.u16()?,
                     account: r.u64()?,
                     asset: r.u32()?,
                     amount: r.u128()?,
@@ -763,16 +797,58 @@ impl Ledger {
         }
         if v3 {
             for _ in 0..r.u32()? {
-                let k = (r.u64()?, r.u32()?);
+                let (a, asset) = (r.u64()?, r.u32()?);
+                let group = if v4 { r.u16()? } else { 0 };
                 let v = r.u128()?;
-                if v == 0 || l.lent.insert(k, v).is_some() {
+                let prev = l.lent.get(&(a, asset)).copied().unwrap_or(0);
+                if v == 0
+                    || l.lent_g.insert((a, asset, group), v).is_some()
+                    || prev.checked_add(v).is_none()
+                {
                     return Err(DecodeError("bad lent entry"));
                 }
+                l.lent.insert((a, asset), prev + v);
             }
             l.lent_granted = get_map(&mut r)?;
             l.lent_returned = get_map(&mut r)?;
             l.slice_in = get_map(&mut r)?;
             l.slice_out = get_map(&mut r)?;
+            if v4 {
+                for _ in 0..r.u32()? {
+                    let (asset, group) = (r.u32()?, r.u16()?);
+                    let f = GroupFlow {
+                        granted: r.u128()?,
+                        returned: r.u128()?,
+                        slice_in: r.u128()?,
+                        slice_out: r.u128()?,
+                    };
+                    if l.group_flow.insert((asset, group), f).is_some() {
+                        return Err(DecodeError("bad group flow"));
+                    }
+                }
+            } else {
+                // a single-group snapshot: everything belongs to group 0
+                let assets: BTreeSet<AssetId> = l
+                    .lent_granted
+                    .keys()
+                    .chain(l.lent_returned.keys())
+                    .chain(l.slice_in.keys())
+                    .chain(l.slice_out.keys())
+                    .copied()
+                    .collect();
+                for a in assets {
+                    let g = |m: &BTreeMap<AssetId, Amount>| m.get(&a).copied().unwrap_or(0);
+                    l.group_flow.insert(
+                        (a, 0),
+                        GroupFlow {
+                            granted: g(&l.lent_granted),
+                            returned: g(&l.lent_returned),
+                            slice_in: g(&l.slice_in),
+                            slice_out: g(&l.slice_out),
+                        },
+                    );
+                }
+            }
             if !l.has_slice_state() {
                 return Err(DecodeError("empty slice section"));
             }

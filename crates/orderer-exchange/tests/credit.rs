@@ -141,6 +141,7 @@ impl Node {
 
 fn grant(account: u64, asset: u32, amount: u128) -> OutMsg {
     OutMsg::Grant {
+        group: 0,
         account,
         asset,
         amount,
@@ -186,6 +187,7 @@ fn slice_wire_round_trips_and_rejects_garbage() {
         msgs: vec![
             grant(7, USD, u128::MAX),
             OutMsg::Recall {
+                group: 0,
                 account: 7,
                 asset: USD,
                 amount: (1u128 << 64) + 5,
@@ -254,21 +256,25 @@ fn fills_become_group_stream_reports_at_the_epoch() {
     // the trade is at the resting buy's price, 100; the seller was the taker
     let has = |e: Event| assert!(ev.contains(&e), "{e:?} missing from {ev:?}");
     has(Event::SliceOut {
+        group: 0,
         account: 7,
         asset: USD,
         amount: 300,
     });
     has(Event::SliceIn {
+        group: 0,
         account: 7,
         asset: BTC,
         amount: 2955,
     });
     has(Event::SliceOut {
+        group: 0,
         account: 8,
         asset: BTC,
         amount: 3000,
     });
     has(Event::SliceIn {
+        group: 0,
         account: 8,
         asset: USD,
         amount: 296,
@@ -304,6 +310,7 @@ fn a_recall_returns_only_free_credit_after_reporting_what_was_gained() {
         1,
         2,
         vec![OutMsg::Recall {
+            group: 0,
             account: 7,
             asset: USD,
             amount: 100_000,
@@ -314,6 +321,7 @@ fn a_recall_returns_only_free_credit_after_reporting_what_was_gained() {
     assert_eq!(
         ev[before..],
         [Event::Returned {
+            group: 0,
             account: 7,
             asset: USD,
             amount: 600
@@ -336,6 +344,7 @@ fn a_recall_returns_only_free_credit_after_reporting_what_was_gained() {
         1,
         3,
         vec![OutMsg::Recall {
+            group: 0,
             account: 7,
             asset: USD,
             amount: 100_000,
@@ -344,6 +353,7 @@ fn a_recall_returns_only_free_credit_after_reporting_what_was_gained() {
     assert_eq!(
         n.stream().last(),
         Some(&Event::Returned {
+            group: 0,
             account: 7,
             asset: USD,
             amount: 100
@@ -364,6 +374,113 @@ fn a_duplicate_grant_batch_is_applied_once() {
     assert_eq!(n.view.with_slice(|s| s.total(7, USD)).unwrap(), 1000);
     n.forward(1, 1, vec![grant(7, USD, 1)]);
     assert_eq!(n.view.with_slice(|s| s.total(7, USD)).unwrap(), 1001);
+}
+
+#[test]
+fn grants_and_recalls_for_another_group_are_consumed_without_effect() {
+    // this node is credit group 0; messages addressed to group 1 are consumed (the
+    // intake cursor moves, so the stream stays contiguous) but touch no credit
+    let mut n = node(1, EPOCH);
+    let other = |account, amount| OutMsg::Grant {
+        group: 1,
+        account,
+        asset: USD,
+        amount,
+    };
+    n.forward(1, 0, vec![grant(7, USD, 1000), other(7, 5000), other(8, 9)]);
+    assert_eq!(n.view.cursor(1), 3);
+    assert_eq!(n.view.with_slice(|s| s.total(7, USD)).unwrap(), 1000);
+    assert_eq!(n.view.with_slice(|s| s.total(8, USD)).unwrap(), 0);
+    let before = n.stream().len();
+    n.forward(
+        1,
+        3,
+        vec![OutMsg::Recall {
+            group: 1,
+            account: 7,
+            asset: USD,
+            amount: 1000,
+        }],
+    );
+    assert_eq!(n.view.cursor(1), 4);
+    assert_eq!(n.view.with_slice(|s| s.total(7, USD)).unwrap(), 1000);
+    assert_eq!(n.stream().len(), before, "a foreign recall reports nothing");
+    // its own recall still works
+    n.forward(
+        1,
+        4,
+        vec![OutMsg::Recall {
+            group: 0,
+            account: 7,
+            asset: USD,
+            amount: 400,
+        }],
+    );
+    assert_eq!(n.view.with_slice(|s| s.total(7, USD)).unwrap(), 600);
+}
+
+#[test]
+fn group_numbers_survive_the_wire() {
+    for group in [0u16, 1, 63, 0x7fff] {
+        for m in [
+            OutMsg::Grant {
+                group,
+                account: 5,
+                asset: USD,
+                amount: u128::MAX - 3,
+            },
+            OutMsg::Recall {
+                group,
+                account: 5,
+                asset: USD,
+                amount: 17,
+            },
+        ] {
+            let b = encode_forward(&Forward {
+                shard: 2,
+                first_idx: 9,
+                msgs: vec![m],
+            });
+            let f = decode_forward(&b).unwrap();
+            assert_eq!(f.msgs, vec![m]);
+        }
+        for e in [
+            Event::SliceIn {
+                group,
+                account: 1,
+                asset: BTC,
+                amount: 9,
+            },
+            Event::SliceOut {
+                group,
+                account: 1,
+                asset: BTC,
+                amount: 9,
+            },
+            Event::Returned {
+                group,
+                account: 1,
+                asset: BTC,
+                amount: 9,
+            },
+        ] {
+            let mut b = Vec::new();
+            put_event(&mut b, &e);
+            assert_eq!(get_event(&mut Rd::new(&b)).unwrap(), e);
+        }
+    }
+    // a group number on a message that has none is not canonical
+    let mut b = encode_forward(&Forward {
+        shard: 0,
+        first_idx: 0,
+        msgs: vec![OutMsg::Cancel {
+            order: 1,
+            symbol: 10,
+        }],
+    });
+    let n = b.len();
+    b[n - 2] = 1;
+    assert!(decode_forward(&b).is_err());
 }
 
 #[test]
@@ -388,11 +505,13 @@ fn slice_orders_trade_against_orders_forwarded_by_a_ledger() {
     let g = n.stream();
     // the slice reports only its own side: the buyer paid 200 and got 2000 BTC less fee
     assert!(g.contains(&Event::SliceOut {
+        group: 0,
         account: 7,
         asset: USD,
         amount: 200
     }));
     assert!(g.contains(&Event::SliceIn {
+        group: 0,
         account: 7,
         asset: BTC,
         amount: 1970
@@ -445,6 +564,7 @@ fn workload(seed: u64, n: usize) -> Vec<Vec<u8>> {
                     shard: 1,
                     first_idx: next_grant,
                     msgs: vec![OutMsg::Recall {
+                        group: 0,
                         account: 1 + r.below(4),
                         asset: [BTC, USD, ETH][r.below(3) as usize],
                         amount: 1 + r.below(20_000) as u128,
@@ -604,6 +724,7 @@ fn the_group_stream_settles_into_a_ledger_and_everything_comes_back() {
             });
             assert!(matches!(
                 l.apply(&Cmd::Lend {
+                    group: 0,
                     account: *a,
                     asset: *asset,
                     amount: 60_000
@@ -674,6 +795,7 @@ fn the_group_stream_settles_into_a_ledger_and_everything_comes_back() {
             let lent = l.lent(a, asset);
             if lent > 0 {
                 l.apply(&Cmd::Recall {
+                    group: 0,
                     account: a,
                     asset,
                     amount: lent,

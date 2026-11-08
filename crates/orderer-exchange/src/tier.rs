@@ -472,22 +472,26 @@ fn handle_msg(
             cmds.push((symbol, Command::Cancel { order_id: order }));
         }
         // Credit slices (phase 2) exist in credit mode only.
+        // A message addressed to another credit group is consumed without effect
+        // (the relay thins them out; this is the second line of defence).
         OutMsg::Grant {
+            group,
             account,
             asset,
             amount,
         } => {
-            if let Some(c) = credit.as_mut() {
+            if let Some(c) = credit.as_mut().filter(|c| c.slice.group() == group) {
                 c.slice.grant(account, asset, amount);
                 c.demand.remove(&(account, asset));
             }
         }
         OutMsg::Recall {
+            group,
             account,
             asset,
             amount,
         } => {
-            if let Some(c) = credit.as_mut() {
+            if let Some(c) = credit.as_mut().filter(|c| c.slice.group() == group) {
                 let ev = c.slice.recall(account, asset, amount);
                 c.push(ev);
             }

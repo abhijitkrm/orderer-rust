@@ -444,6 +444,7 @@ fn the_digest_sees_every_kind_of_difference() {
             "lend",
             Box::new(|l| {
                 l.apply(&Cmd::Lend {
+                    group: 0,
                     account: 1,
                     asset: USD,
                     amount: 3,
@@ -480,11 +481,13 @@ fn the_digest_sees_every_kind_of_difference() {
         external_id: 80,
     });
     a.apply(&Cmd::Lend {
+        group: 0,
         account: 3,
         asset: USD,
         amount: 4,
     });
     a.apply(&Cmd::Lend {
+        group: 0,
         account: 3,
         asset: USD,
         amount: 5,
@@ -496,11 +499,13 @@ fn the_digest_sees_every_kind_of_difference() {
         external_id: 80,
     });
     b.apply(&Cmd::Lend {
+        group: 0,
         account: 3,
         asset: USD,
         amount: 5,
     });
     b.apply(&Cmd::Lend {
+        group: 0,
         account: 3,
         asset: USD,
         amount: 4,
@@ -868,6 +873,7 @@ fn each_table_alone_changes_the_digest() {
                 prev: 0,
                 idx: 1,
                 event: Event::SliceIn {
+                    group: 0,
                     account: acct,
                     asset: USD,
                     amount: 10

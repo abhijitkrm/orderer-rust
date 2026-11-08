@@ -80,13 +80,12 @@ fn main() {
     let mut audit = Audit::new(gws, tiers, cfg.settle_sources(), move |s| {
         c2.ledger_config(s)
     });
-    let slices = cfg.credit_source().map(|(source, group)| SliceAudit {
-        group_idx: group,
-        source,
-        group: group as u16,
-    });
-    if let Some(sa) = slices {
-        audit = audit.with_slices(sa);
+    for (source, group) in cfg.credit_sources() {
+        audit = audit.with_slices(SliceAudit {
+            group_idx: group,
+            source,
+            group: group as u16,
+        });
     }
     let groups: Vec<Vec<SocketAddr>> = lclients
         .split(';')
@@ -135,7 +134,7 @@ fn main() {
         );
         if once {
             // with slices, converged also means at rest: the slice identity was checked
-            let at_rest = slices.is_none() || rep.at_rest;
+            let at_rest = cfg.credit.is_none() || rep.at_rest;
             if rep.caught_up && at_rest && digests_checked && (!expect_idle || rep.open_orders == 0)
             {
                 break;

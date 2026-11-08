@@ -8,10 +8,11 @@
 //!   2   u16  ledger shard
 //!   4   u64  first outbox index
 //!   12  u32  n
-//!   16  n x message (30 bytes)
+//!   16  n x message (32 bytes)
 //! message: kind u8 (1 submit, 5 submit IOC, 2 cancel) | order u64 | symbol u32 |
 //!          side u8 (0 buy, 1 sell) | price u64 | qty u64
-//!          (a cancel carries side 0, price 0, qty 0)
+//!          (a cancel carries side 0, price 0, qty 0) | group u16
+//!          (the credit group of a grant or recall, 0 in every other message)
 //! ```
 //! Message `i` has outbox index `first + i`. Tags 1 and 2 (plain and session
 //! batches) are unchanged and still go to the pipeline. Tags 3 and 4 of
@@ -22,7 +23,7 @@
 use orderer_ledger::{Event, OutMsg, Side};
 
 pub const TAG_FORWARD: u8 = 5;
-pub const MSG_BYTES: usize = 30;
+pub const MSG_BYTES: usize = 32;
 pub const MAX_BATCH: usize = 1 << 16;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -45,7 +46,7 @@ pub struct Forward {
 ///   4   u64  first outbox index covered
 ///   12  u64  end (one past the last index covered)
 ///   20  u32  n
-///   24  n x (u32 offset from first | message (30 bytes))   offsets strictly increasing, below end - first
+///   24  n x (u32 offset from first | message (32 bytes))   offsets strictly increasing, below end - first
 /// ```
 /// The span covers indices `first..end`; the messages listed are the ones for this
 /// group, every other index in the span is not its concern. The intake applies a
@@ -152,18 +153,20 @@ fn put_msg(out: &mut Vec<u8>, m: &OutMsg) {
             out.extend_from_slice(&0u64.to_le_bytes());
             out.extend_from_slice(&0u64.to_le_bytes());
         }
-        // Phase 2 (CREDIT-SLICES.md): same 30 bytes, the account in the order field,
+        // Phase 2 (CREDIT-SLICES.md): the same fields, the account in the order field,
         // the asset in the symbol field and the 128-bit amount split over the
         // price (low half) and qty (high half) fields.
         OutMsg::Grant {
             account,
             asset,
             amount,
+            ..
         }
         | OutMsg::Recall {
             account,
             asset,
             amount,
+            ..
         } => {
             out.push(if matches!(m, OutMsg::Grant { .. }) {
                 3
@@ -177,6 +180,11 @@ fn put_msg(out: &mut Vec<u8>, m: &OutMsg) {
             out.extend_from_slice(&((amount >> 64) as u64).to_le_bytes());
         }
     }
+    let group = match *m {
+        OutMsg::Grant { group, .. } | OutMsg::Recall { group, .. } => group,
+        _ => 0,
+    };
+    out.extend_from_slice(&group.to_le_bytes());
 }
 
 fn get_msg(r: &mut Rd) -> Result<OutMsg, WireError> {
@@ -184,6 +192,10 @@ fn get_msg(r: &mut Rd) -> Result<OutMsg, WireError> {
     let (order, symbol) = (r.u64()?, r.u32()?);
     let side = get_side(r)?;
     let (price, qty) = (r.u64()?, r.u64()?);
+    let group = r.u16()?;
+    if group != 0 && !matches!(kind, 3 | 4) {
+        return Err(WireError("non-canonical group"));
+    }
     match kind {
         1 => Ok(OutMsg::Submit {
             order,
@@ -206,12 +218,14 @@ fn get_msg(r: &mut Rd) -> Result<OutMsg, WireError> {
             let amount = price as u128 | (qty as u128) << 64;
             Ok(if kind == 3 {
                 OutMsg::Grant {
+                    group,
                     account,
                     asset,
                     amount,
                 }
             } else {
                 OutMsg::Recall {
+                    group,
                     account,
                     asset,
                     amount,
@@ -307,7 +321,7 @@ pub fn decode_span(b: &[u8]) -> Result<Span, WireError> {
 
 /// A settlement event: `1 trade (buy u64, sell u64, price u64, qty u64, taker_is_buy u8)`,
 /// `2 closed (order u64)`, or the phase 2 kinds `3 slice-in`, `4 slice-out`, `6 returned`
-/// (`account u64, asset u32, amount u128`) and `5 slice-fee (asset u32, amount u128)`.
+/// (`group u16, account u64, asset u32, amount u128`) and `5 slice-fee (asset u32, amount u128)`.
 pub fn put_event(out: &mut Vec<u8>, e: &Event) {
     match *e {
         Event::Trade {
@@ -328,30 +342,41 @@ pub fn put_event(out: &mut Vec<u8>, e: &Event) {
             out.extend_from_slice(&order.to_le_bytes());
         }
         Event::SliceIn {
+            group,
             account,
             asset,
             amount,
-        } => put_account_event(out, 3, account, asset, amount),
+        } => put_account_event(out, 3, group, account, asset, amount),
         Event::SliceOut {
+            group,
             account,
             asset,
             amount,
-        } => put_account_event(out, 4, account, asset, amount),
+        } => put_account_event(out, 4, group, account, asset, amount),
         Event::SliceFee { asset, amount } => {
             out.push(5);
             out.extend_from_slice(&asset.to_le_bytes());
             out.extend_from_slice(&amount.to_le_bytes());
         }
         Event::Returned {
+            group,
             account,
             asset,
             amount,
-        } => put_account_event(out, 6, account, asset, amount),
+        } => put_account_event(out, 6, group, account, asset, amount),
     }
 }
 
-fn put_account_event(out: &mut Vec<u8>, kind: u8, account: u64, asset: u32, amount: u128) {
+fn put_account_event(
+    out: &mut Vec<u8>,
+    kind: u8,
+    group: u16,
+    account: u64,
+    asset: u32,
+    amount: u128,
+) {
     out.push(kind);
+    out.extend_from_slice(&group.to_le_bytes());
     out.extend_from_slice(&account.to_le_bytes());
     out.extend_from_slice(&asset.to_le_bytes());
     out.extend_from_slice(&amount.to_le_bytes());
@@ -380,11 +405,13 @@ pub fn get_event(r: &mut Rd) -> Result<Event, WireError> {
         }
         2 => Ok(Event::Closed { order: r.u64()? }),
         3 => Ok(Event::SliceIn {
+            group: r.u16()?,
             account: r.u64()?,
             asset: r.u32()?,
             amount: get_u128(r)?,
         }),
         4 => Ok(Event::SliceOut {
+            group: r.u16()?,
             account: r.u64()?,
             asset: r.u32()?,
             amount: get_u128(r)?,
@@ -394,6 +421,7 @@ pub fn get_event(r: &mut Rd) -> Result<Event, WireError> {
             amount: get_u128(r)?,
         }),
         6 => Ok(Event::Returned {
+            group: r.u16()?,
             account: r.u64()?,
             asset: r.u32()?,
             amount: get_u128(r)?,

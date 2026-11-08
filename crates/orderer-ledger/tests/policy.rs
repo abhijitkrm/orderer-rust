@@ -36,6 +36,7 @@ fn ledger() -> Ledger {
 
 fn cfg() -> PolicyConfig {
     PolicyConfig {
+        group: 0,
         chunk: [(USD, 400)].into(),
         low_water_pct: 25,
         account_cap: [(USD, 700)].into(),
@@ -57,6 +58,7 @@ fn first_use_lends_one_chunk_within_the_account_balance() {
     assert_eq!(
         cmds,
         vec![Cmd::Lend {
+            group: 0,
             account: 1,
             asset: USD,
             amount: 400
@@ -73,6 +75,7 @@ fn first_use_lends_one_chunk_within_the_account_balance() {
     assert_eq!(
         cmds,
         vec![Cmd::Lend {
+            group: 0,
             account: 2,
             asset: USD,
             amount: 200
@@ -93,6 +96,7 @@ fn first_use_lends_one_chunk_within_the_account_balance() {
 fn refill_needs_demand_and_a_credit_below_the_low_water_mark() {
     let mut l = ledger();
     l.apply(&Cmd::Lend {
+        group: 0,
         account: 1,
         asset: USD,
         amount: 400,
@@ -105,6 +109,7 @@ fn refill_needs_demand_and_a_credit_below_the_low_water_mark() {
     assert_eq!(
         cmds,
         vec![Cmd::Lend {
+            group: 0,
             account: 1,
             asset: USD,
             amount: 300
@@ -177,6 +182,7 @@ fn max_actions_bounds_a_plan() {
 fn an_unmoving_slice_with_free_credit_is_recalled_once_per_idle_period() {
     let mut l = ledger();
     l.apply(&Cmd::Lend {
+        group: 0,
         account: 1,
         asset: USD,
         amount: 400,
@@ -192,6 +198,7 @@ fn an_unmoving_slice_with_free_credit_is_recalled_once_per_idle_period() {
     assert_eq!(
         cmds,
         vec![Cmd::Recall {
+            group: 0,
             account: 1,
             asset: USD,
             amount: 300
@@ -207,6 +214,7 @@ fn an_unmoving_slice_with_free_credit_is_recalled_once_per_idle_period() {
 fn movement_resets_the_idle_clock_and_nothing_free_is_not_recalled() {
     let mut l = ledger();
     l.apply(&Cmd::Lend {
+        group: 0,
         account: 1,
         asset: USD,
         amount: 400,
@@ -227,6 +235,7 @@ fn movement_resets_the_idle_clock_and_nothing_free_is_not_recalled() {
     // a slice that was fully returned is forgotten
     let mut l2 = ledger();
     l2.apply(&Cmd::Lend {
+        group: 0,
         account: 1,
         asset: USD,
         amount: 400,
@@ -243,6 +252,7 @@ fn movement_resets_the_idle_clock_and_nothing_free_is_not_recalled() {
 fn losing_the_state_only_restarts_the_idle_clocks() {
     let mut l = ledger();
     l.apply(&Cmd::Lend {
+        group: 0,
         account: 1,
         asset: USD,
         amount: 400,
@@ -261,6 +271,7 @@ fn losing_the_state_only_restarts_the_idle_clocks() {
 fn idle_zero_never_returns() {
     let mut l = ledger();
     l.apply(&Cmd::Lend {
+        group: 0,
         account: 1,
         asset: USD,
         amount: 400,
@@ -278,6 +289,7 @@ fn the_group_cap_counts_what_is_already_lent() {
     // 700 already lent by accounts 1 and 2 (within each account's cap)
     for (a, amt) in [(1u64, 400u128), (2, 300)] {
         l.apply(&Cmd::Lend {
+            group: 0,
             account: a,
             asset: USD,
             amount: amt,
@@ -295,6 +307,7 @@ fn the_group_cap_counts_what_is_already_lent() {
     assert_eq!(
         cmds,
         vec![Cmd::Lend {
+            group: 0,
             account: 3,
             asset: USD,
             amount: 300

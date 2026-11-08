@@ -31,6 +31,7 @@ fn lend_moves_available_to_lent_and_queues_a_grant() {
     dep(&mut l, 1, USD, 1000, 1);
     assert_eq!(
         l.apply(&Cmd::Lend {
+            group: 0,
             account: 1,
             asset: USD,
             amount: 600
@@ -43,6 +44,7 @@ fn lend_moves_available_to_lent_and_queues_a_grant() {
     assert_eq!(
         l.outbox().1.next().copied(),
         Some(OutMsg::Grant {
+            group: 0,
             account: 1,
             asset: USD,
             amount: 600
@@ -54,6 +56,7 @@ fn lend_moves_available_to_lent_and_queues_a_grant() {
     l.check().unwrap();
     // cannot lend what is not available, or nothing, or the fee account's money
     let lend = |account, amount| Cmd::Lend {
+        group: 0,
         account,
         asset: USD,
         amount,
@@ -84,12 +87,14 @@ fn recall_is_a_request_bounded_by_what_is_lent() {
     let mut l = Ledger::new(config(0));
     dep(&mut l, 1, USD, 1000, 1);
     let recall = |amount| Cmd::Recall {
+        group: 0,
         account: 1,
         asset: USD,
         amount,
     };
     assert_eq!(l.apply(&recall(5)), Outcome::Rejected(Reject::Insufficient));
     l.apply(&Cmd::Lend {
+        group: 0,
         account: 1,
         asset: USD,
         amount: 300,
@@ -100,6 +105,7 @@ fn recall_is_a_request_bounded_by_what_is_lent() {
     assert_eq!(
         msgs[1],
         OutMsg::Recall {
+            group: 0,
             account: 1,
             asset: USD,
             amount: 300
@@ -116,6 +122,7 @@ fn slice_events_move_lent_money_and_the_books_still_balance() {
     let mut l = Ledger::new(config(0));
     dep(&mut l, 1, USD, 1000, 1);
     l.apply(&Cmd::Lend {
+        group: 0,
         account: 1,
         asset: USD,
         amount: 600,
@@ -126,6 +133,7 @@ fn slice_events_move_lent_money_and_the_books_still_balance() {
             &mut l,
             1,
             ev(Event::SliceOut {
+                group: 0,
                 account: 1,
                 asset: USD,
                 amount: 100
@@ -139,6 +147,7 @@ fn slice_events_move_lent_money_and_the_books_still_balance() {
             &mut l,
             2,
             Event::SliceIn {
+                group: 0,
                 account: 1,
                 asset: BTC,
                 amount: 7
@@ -164,6 +173,7 @@ fn slice_events_move_lent_money_and_the_books_still_balance() {
             &mut l,
             4,
             Event::Returned {
+                group: 0,
                 account: 1,
                 asset: USD,
                 amount: 200
@@ -180,6 +190,7 @@ fn slice_events_move_lent_money_and_the_books_still_balance() {
         &mut l,
         5,
         Event::Returned {
+            group: 0,
             account: 1,
             asset: USD,
             amount: 300,
@@ -194,6 +205,7 @@ fn a_slice_event_that_would_overdraw_lent_money_is_an_anomaly_that_changes_nothi
     let mut l = Ledger::new(config(0));
     dep(&mut l, 1, USD, 1000, 1);
     l.apply(&Cmd::Lend {
+        group: 0,
         account: 1,
         asset: USD,
         amount: 50,
@@ -201,21 +213,25 @@ fn a_slice_event_that_would_overdraw_lent_money_is_an_anomaly_that_changes_nothi
     let before = l.snapshot();
     for (i, e) in [
         Event::SliceOut {
+            group: 0,
             account: 1,
             asset: USD,
             amount: 51,
         },
         Event::Returned {
+            group: 0,
             account: 1,
             asset: USD,
             amount: 51,
         },
         Event::Returned {
+            group: 0,
             account: 2,
             asset: USD,
             amount: 1,
         },
         Event::SliceIn {
+            group: 0,
             account: 1,
             asset: USD,
             amount: 0,
@@ -242,11 +258,13 @@ fn a_slice_event_that_would_overdraw_lent_money_is_an_anomaly_that_changes_nothi
 fn phase_two_wire_formats_round_trip_and_are_pinned() {
     let cmds = [
         Cmd::Lend {
+            group: 0,
             account: 1,
             asset: 2,
             amount: u128::MAX,
         },
         Cmd::Recall {
+            group: 0,
             account: 1,
             asset: 2,
             amount: 3,
@@ -256,6 +274,7 @@ fn phase_two_wire_formats_round_trip_and_are_pinned() {
             prev: 2,
             idx: 3,
             event: Event::SliceIn {
+                group: 0,
                 account: 4,
                 asset: 5,
                 amount: 6,
@@ -266,6 +285,7 @@ fn phase_two_wire_formats_round_trip_and_are_pinned() {
             prev: 2,
             idx: 3,
             event: Event::SliceOut {
+                group: 0,
                 account: 4,
                 asset: 5,
                 amount: 6,
@@ -285,6 +305,7 @@ fn phase_two_wire_formats_round_trip_and_are_pinned() {
             prev: 2,
             idx: 3,
             event: Event::Returned {
+                group: 0,
                 account: 4,
                 asset: 5,
                 amount: 6,
@@ -298,10 +319,11 @@ fn phase_two_wire_formats_round_trip_and_are_pinned() {
             assert!(decode_cmd(&b[..cut]).is_err());
         }
     }
-    let mut want = vec![12u8, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 3];
+    let mut want = vec![12u8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 3];
     want.extend_from_slice(&[0; 15]);
     assert_eq!(
         encode_cmd(&Cmd::Lend {
+            group: 0,
             account: 1,
             asset: 2,
             amount: 3
@@ -311,6 +333,7 @@ fn phase_two_wire_formats_round_trip_and_are_pinned() {
     want[0] = 13;
     assert_eq!(
         encode_cmd(&Cmd::Recall {
+            group: 0,
             account: 1,
             asset: 2,
             amount: 3
@@ -330,12 +353,13 @@ fn the_snapshot_format_changes_only_when_phase_two_state_exists() {
         "no slice state: the old format, byte for byte"
     );
     l.apply(&Cmd::Lend {
+        group: 0,
         account: 1,
         asset: USD,
         amount: 10,
     });
     let snap = l.snapshot();
-    assert_eq!(&snap[..4], b"LDG3");
+    assert_eq!(&snap[..4], b"LDG4");
     let mut r = Ledger::new(config(0));
     r.restore(&snap).unwrap();
     assert_eq!(r.snapshot(), snap);
@@ -348,7 +372,7 @@ fn the_snapshot_format_changes_only_when_phase_two_state_exists() {
     let at = bad.len() - 1;
     // the last map is slice_out (empty): its count is 4 bytes; change the
     // granted amount instead by flipping a byte inside the granted map
-    let granted_amount_lo = at - (4 + 4) /*slice_out count*/ - (4 + 4) /*slice_in count*/ - (4 + 4) /*returned count*/ - 16 /*granted amount*/ + 1;
+    let granted_amount_lo = at - (4 + 4 + 2 + 64) /*group flow section*/ - (4 + 4) /*slice_out count*/ - (4 + 4) /*slice_in count*/ - (4 + 4) /*returned count*/ - 16 /*granted amount*/ + 1;
     bad[granted_amount_lo] ^= 1;
     assert!(Ledger::new(config(0)).restore(&bad).is_err());
     for cut in [snap.len() - 1, snap.len() - 20] {
@@ -409,21 +433,25 @@ fn fills_are_reported_to_the_ledger_exactly() {
     // buyer paid 285 USD, got 3000 BTC less 1.5% = 45; seller the mirror
     let find = |want: Event| assert!(rep.contains(&want), "{want:?} missing from {rep:?}");
     find(Event::SliceOut {
+        group: 0,
         account: 1,
         asset: USD,
         amount: 285,
     });
     find(Event::SliceIn {
+        group: 0,
         account: 1,
         asset: BTC,
         amount: 2955,
     });
     find(Event::SliceOut {
+        group: 0,
         account: 2,
         asset: BTC,
         amount: 3000,
     });
     find(Event::SliceIn {
+        group: 0,
         account: 2,
         asset: USD,
         amount: 281,
@@ -494,6 +522,7 @@ fn only_uncommitted_credit_is_ever_recalled_and_net_is_reported_first() {
     assert_eq!(
         *ret,
         Event::Returned {
+            group: 0,
             account: 1,
             asset: USD,
             amount: 615
@@ -533,11 +562,13 @@ fn a_slice_ignores_events_about_phase_one_orders() {
     let rep = s.report();
     // only the slice side moved: the buyer paid 100 USD and got 1000 BTC less fee
     assert!(rep.contains(&Event::SliceOut {
+        group: 0,
         account: 1,
         asset: USD,
         amount: 100
     }));
     assert!(rep.contains(&Event::SliceIn {
+        group: 0,
         account: 1,
         asset: BTC,
         amount: 985

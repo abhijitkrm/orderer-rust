@@ -237,6 +237,7 @@ fn ioc_messages_survive_the_wire_and_replays_are_not_applied_twice() {
 
 fn grant(account: u64, asset: u32, amount: u128) -> OutMsg {
     OutMsg::Grant {
+        group: 0,
         account,
         asset,
         amount,

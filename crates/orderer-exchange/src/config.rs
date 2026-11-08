@@ -15,6 +15,8 @@
 //! # every EPOCH applied entries
 //! credit_group    = 0
 //! credit_epoch    = 256
+//! # (a second `credit_group = 1` line, or `credit_group = 0, 1`, puts several groups
+//! # in credit mode; each keeps its own slices and its own report stream)
 //! ```
 //!
 //! Everything is an integer; assets are numeric ids (a name table belongs to the
@@ -53,13 +55,14 @@ pub struct ExchangeConfig {
     pub fee_ppm: u32,
     /// Sorted by id.
     pub symbols: Vec<SymbolCfg>,
-    /// Phase 2: the one matching group that runs in credit mode.
+    /// Phase 2: the matching groups that run in credit mode, if any.
     pub credit: Option<CreditSetting>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CreditSetting {
-    pub group: u32,
+    /// Sorted, distinct, never empty.
+    pub groups: Vec<u32>,
     /// Fills are settled into slices every this many applied entries.
     pub epoch: u64,
 }
@@ -91,7 +94,7 @@ pub const MAX_LEDGER_SHARDS: u16 = 0x8000;
 impl ExchangeConfig {
     pub fn parse(text: &str) -> Result<ExchangeConfig, ConfigError> {
         let (mut shards, mut groups, mut parts, mut fee) = (None, None, None, None);
-        let (mut credit_group, mut credit_epoch) = (None, None);
+        let (mut credit_groups, mut credit_epoch): (Vec<u64>, _) = (Vec::new(), None);
         let mut symbols: BTreeMap<u32, SymbolCfg> = BTreeMap::new();
         for (i, raw) in text.lines().enumerate() {
             let line = i + 1;
@@ -114,7 +117,15 @@ impl ExchangeConfig {
                 "matching_groups" => once(&mut groups, num(line, key, value)?)?,
                 "partitions" => once(&mut parts, num(line, key, value)?)?,
                 "fee_ppm" => once(&mut fee, num(line, key, value)?)?,
-                "credit_group" => once(&mut credit_group, num(line, key, value)?)?,
+                "credit_group" => {
+                    for part in value.split(',') {
+                        let g = num(line, key, part.trim())?;
+                        if credit_groups.contains(&g) {
+                            return err(line, format!("credit group {g} is listed twice"));
+                        }
+                        credit_groups.push(g);
+                    }
+                }
                 "credit_epoch" => once(&mut credit_epoch, num(line, key, value)?)?,
                 "symbol" => {
                     let mut it = value.split_whitespace();
@@ -207,14 +218,23 @@ impl ExchangeConfig {
             fee_ppm: u32::try_from(need(fee, "fee_ppm")?)
                 .map_err(|_| ConfigError("fee_ppm is too large".into()))?,
             symbols: symbols.into_values().collect(),
-            credit: match (credit_group, credit_epoch) {
-                (None, None) => None,
-                (Some(g), e) => Some(CreditSetting {
-                    group: u32::try_from(g)
-                        .map_err(|_| ConfigError("credit_group is too large".into()))?,
-                    epoch: e.unwrap_or(256),
-                }),
-                (None, Some(_)) => {
+            credit: match (credit_groups.is_empty(), credit_epoch) {
+                (true, None) => None,
+                (false, e) => {
+                    let mut groups = credit_groups
+                        .iter()
+                        .map(|&g| {
+                            u32::try_from(g)
+                                .map_err(|_| ConfigError("credit_group is too large".into()))
+                        })
+                        .collect::<Result<Vec<u32>, _>>()?;
+                    groups.sort_unstable();
+                    Some(CreditSetting {
+                        groups,
+                        epoch: e.unwrap_or(256),
+                    })
+                }
+                (true, Some(_)) => {
                     return Err(ConfigError(
                         "credit_epoch is set without credit_group".into(),
                     ))
@@ -277,12 +297,19 @@ impl ExchangeConfig {
                 }
             }
         }
-        if let Some(c) = self.credit {
-            if c.group >= self.matching_groups {
-                return bad(format!(
-                    "credit_group {} but there are {} matching groups",
-                    c.group, self.matching_groups
-                ));
+        if let Some(c) = &self.credit {
+            for &g in &c.groups {
+                if g >= self.matching_groups {
+                    return bad(format!(
+                        "credit_group {} but there are {} matching groups",
+                        g, self.matching_groups
+                    ));
+                }
+                if g >= 64 {
+                    return bad(format!(
+                        "credit_group {g}: credit groups are numbered below 64"
+                    ));
+                }
             }
             if c.epoch == 0 {
                 return bad("credit_epoch must be at least 1".into());
@@ -346,21 +373,33 @@ impl ExchangeConfig {
             .collect()
     }
 
-    /// The credit group's stream of slice reports: `(stream id, group)`.
-    pub fn credit_source(&self) -> Option<(u32, usize)> {
-        self.credit.map(|c| {
-            (
-                self.source_base(c.group) + self.partitions,
-                c.group as usize,
-            )
-        })
+    /// The credit groups, sorted (empty without phase 2).
+    pub fn credit_groups(&self) -> &[u32] {
+        self.credit.as_ref().map_or(&[], |c| &c.groups)
     }
 
-    /// What the settler and the audit read: the partition streams, then the credit
-    /// group's report stream if there is one.
+    pub fn is_credit(&self, group: u32) -> bool {
+        self.credit_groups().contains(&group)
+    }
+
+    /// Bit `g` set for every credit group `g` (what the thinning relay routes by).
+    pub fn credit_mask(&self) -> u64 {
+        self.credit_groups().iter().fold(0, |m, g| m | 1 << g)
+    }
+
+    /// Each credit group's stream of slice reports: `(stream id, group)`.
+    pub fn credit_sources(&self) -> Vec<(u32, usize)> {
+        self.credit_groups()
+            .iter()
+            .map(|&g| (self.source_base(g) + self.partitions, g as usize))
+            .collect()
+    }
+
+    /// What the settler and the audit read: the partition streams, then each credit
+    /// group's report stream.
     pub fn settle_sources(&self) -> Vec<(u32, usize)> {
         let mut v = self.sources();
-        v.extend(self.credit_source());
+        v.extend(self.credit_sources());
         v
     }
 
@@ -371,7 +410,7 @@ impl ExchangeConfig {
         group: u32,
         retain: usize,
     ) -> Option<crate::tier::credit::CreditConfig> {
-        let c = self.credit.filter(|c| c.group == group)?;
+        let c = self.credit.as_ref().filter(|_| self.is_credit(group))?;
         Some(crate::tier::credit::CreditConfig {
             ledger: self.ledger_config(0),
             group: group as u16,
@@ -385,11 +424,11 @@ impl ExchangeConfig {
             "orderer-exchange-config/1\nledger_shards={}\nmatching_groups={}\npartitions={}\nfee_ppm={}\n",
             self.ledger_shards, self.matching_groups, self.partitions, self.fee_ppm
         );
-        if let Some(c) = self.credit {
-            s.push_str(&format!(
-                "credit_group={}\ncredit_epoch={}\n",
-                c.group, c.epoch
-            ));
+        if let Some(c) = &self.credit {
+            for g in &c.groups {
+                s.push_str(&format!("credit_group={g}\n"));
+            }
+            s.push_str(&format!("credit_epoch={}\n", c.epoch));
         }
         for y in &self.symbols {
             s.push_str(&format!(
@@ -520,5 +559,56 @@ symbol = 15 base=7 quote=2 lot=1
         assert_eq!(d.fee_ppm, o.fee_ppm);
         assert_eq!(d.symbols, o.symbols);
         assert_eq!(d.fees, o.fees);
+    }
+
+    #[test]
+    fn credit_groups_parse_derive_and_checksum() {
+        // the old single-group syntax and spelling still work, with its old checksum text
+        let one =
+            ExchangeConfig::parse(&format!("{GOOD}credit_group = 1\ncredit_epoch = 64\n")).unwrap();
+        assert_eq!(one.credit_groups(), &[1]);
+        assert_eq!(one.credit_mask(), 0b10);
+        assert!(one
+            .canonical()
+            .contains("credit_group=1\ncredit_epoch=64\n"));
+        assert!(!one.canonical().contains("credit_group=0"));
+        // several groups: repeated lines or a comma list, any order, the same meaning
+        let a =
+            ExchangeConfig::parse(&format!("{GOOD}credit_group = 1\ncredit_group = 0\n")).unwrap();
+        let b = ExchangeConfig::parse(&format!("credit_group = 0, 1\n{GOOD}")).unwrap();
+        assert_eq!(a.credit_groups(), &[0, 1]);
+        assert_eq!(a.checksum(), b.checksum());
+        assert_eq!(a.credit.as_ref().unwrap().epoch, 256);
+        assert_eq!(a.credit_mask(), 0b11);
+        assert!(a.is_credit(0) && a.is_credit(1) && !a.is_credit(2));
+        // each credit group has its own report stream after its partition streams
+        assert_eq!(a.credit_sources(), vec![(4, 0), (9, 1)]);
+        assert_eq!(a.settle_sources().len(), 8 + 2);
+        assert_eq!(a.settle_sources()[8], (4, 0));
+        for g in 0..2 {
+            let cc = a.credit_config(g, 8).unwrap();
+            assert_eq!(cc.group as u32, g);
+        }
+        assert!(one.credit_config(0, 8).is_none());
+        // the set of groups is part of the checksum
+        assert_ne!(one.checksum(), a.checksum());
+        let plain = ExchangeConfig::parse(GOOD).unwrap();
+        assert_ne!(plain.checksum(), a.checksum());
+        assert!(plain.credit_groups().is_empty());
+        assert_eq!(plain.credit_mask(), 0);
+        assert!(plain.credit_config(0, 8).is_none());
+    }
+
+    #[test]
+    fn credit_group_mistakes_are_refused() {
+        let e = |t: &str| ExchangeConfig::parse(t).unwrap_err().0;
+        assert!(e(&format!("{GOOD}credit_group = 0\ncredit_group = 0\n"))
+            .contains("credit group 0 is listed twice"));
+        assert!(e(&format!("{GOOD}credit_group = 0, 0\n")).contains("listed twice"));
+        assert!(e(&format!("{GOOD}credit_group = 2\n")).contains("but there are 2 matching"));
+        assert!(e(&format!("{GOOD}credit_epoch = 4\n")).contains("without credit_group"));
+        assert!(e(&format!("{GOOD}credit_group = 0\ncredit_epoch = 0\n"))
+            .contains("credit_epoch must be at least 1"));
+        assert!(e(&format!("{GOOD}credit_group = x\n")).contains("not a valid number"));
     }
 }

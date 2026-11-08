@@ -9,7 +9,7 @@
 //!                         benchmarks start from funded slices)
 //!
 //! Phase 2: with `--tier "A,B,C;D,E,F" --slice-pct P` (and `credit_group` in the
-//! config), P percent of the orders for symbols the credit group owns are entered at
+//! config), P percent of the orders for symbols a credit group owns are entered at
 //! that group directly, against the credit slices the slice driver lends it; an order
 //! the group refuses for lack of credit goes through the ledger (phase 1) instead, and
 //! the refusal is what makes the driver lend. `--chaos N` sends every Nth slice request
@@ -47,9 +47,9 @@ struct Ctx {
     symbols: Vec<u32>,
     assets: Vec<u32>,
     auth: Auth,
-    /// The credit group, its number of groups (for `group_of`) and the share of
-    /// its orders sent through the slice path.
-    credit: Option<usize>,
+    /// The credit groups, the number of groups (for `group_of`) and the share of
+    /// their orders sent through the slice path.
+    credit: Vec<usize>,
     groups: u32,
     slice_pct: u64,
     withdraw_max: u64,
@@ -154,17 +154,21 @@ fn worker(
     // (account, order, entered at the credit group)
     let mut open: Vec<(u64, u64, bool)> = Vec::new();
     let mut c = Counts::default();
-    let mut slice: Option<SliceClient> = match ctx().credit {
-        Some(g) if ctx().slice_pct > 0 && !tiers.is_empty() => {
-            let mut sc = SliceClient::new(
-                TierClient::with_auth(tiers[g].clone(), ctx().auth.clone()),
-                SliceClient::fresh_id(),
-            );
-            sc.chaos = ctx().chaos;
-            Some(sc)
-        }
-        _ => None,
-    };
+    // one client per credit group (indexed by group)
+    let mut slices: Vec<Option<SliceClient>> = (0..tiers.len())
+        .map(|g| {
+            if ctx().credit.contains(&g) && ctx().slice_pct > 0 {
+                let mut sc = SliceClient::new(
+                    TierClient::with_auth(tiers[g].clone(), ctx().auth.clone()),
+                    SliceClient::fresh_id(),
+                );
+                sc.chaos = ctx().chaos;
+                Some(sc)
+            } else {
+                None
+            }
+        })
+        .collect();
     let map = ShardMap::new(ctx().groups);
     let mut ext = client << 24;
     let end = Instant::now() + Duration::from_secs(secs);
@@ -183,8 +187,9 @@ fn worker(
                 let price = 95 + rng.below(11);
                 let qty = 1 + rng.below(5);
                 // phase 2: straight to the credit group, if it owns the symbol
-                if let (Some(sc), Some(g)) = (slice.as_mut(), ctx().credit) {
-                    if map.group_of(symbol) as usize == g && rng.below(100) < ctx().slice_pct {
+                let g = map.group_of(symbol) as usize;
+                if let Some(sc) = slices.get_mut(g).and_then(|c| c.as_mut()) {
+                    if rng.below(100) < ctx().slice_pct {
                         let ioc = rng.below(10) == 0;
                         let mut r = sc.enter(account, symbol, side, price, qty, ioc);
                         // no definite answer (leaders being killed): repeat the same request
@@ -241,7 +246,11 @@ fn worker(
                 let (acct, order, at_group) = open.swap_remove(i);
                 if at_group {
                     // cancel at the group; a refusal (already filled) is fine
-                    let sc = slice.as_mut().expect("slice orders need a slice client");
+                    // a slice order's id carries its credit group in the shard field
+                    let g = ((order >> 48) & 0x7fff) as usize;
+                    let sc = slices[g]
+                        .as_mut()
+                        .expect("slice orders need a slice client");
                     let mut r = sc.cancel(acct, order);
                     while r.is_err() {
                         match sc.resolve_pending() {
@@ -482,7 +491,12 @@ fn main() {
         symbols: setup.cfg.symbols.iter().map(|s| s.id).collect(),
         assets,
         auth: setup.auth.clone(),
-        credit: setup.cfg.credit.map(|c| c.group as usize),
+        credit: setup
+            .cfg
+            .credit_groups()
+            .iter()
+            .map(|&g| g as usize)
+            .collect(),
         groups: setup.cfg.matching_groups,
         slice_pct,
         withdraw_max,
@@ -495,7 +509,7 @@ fn main() {
         parse_groups(&tier).unwrap_or_else(|e| die(&e))
     };
     if slice_pct > 0
-        && (tiers.len() != setup.cfg.matching_groups as usize || ctx().credit.is_none())
+        && (tiers.len() != setup.cfg.matching_groups as usize || ctx().credit.is_empty())
     {
         die("--slice-pct needs --tier for every group and a credit_group in the config");
     }
@@ -560,59 +574,66 @@ fn main() {
             );
         }
         "lend" => {
-            let Some(g) = ctx().credit else {
+            if ctx().credit.is_empty() {
                 die("lend needs credit_group in the config");
-            };
+            }
             let mut gws: Vec<GatewayClient> = addrs.iter().map(|a| gateway(a.clone())).collect();
             let n = gws.len() as u64;
             let mut seq = vec![0u64; gws.len()];
             let client = base & !0xff;
-            for account in 1..=accounts {
-                let s = (account % n) as usize;
-                for asset in ctx().assets.clone() {
-                    seq[s] += 1;
-                    match gws[s].cmd(
-                        client + s as u64,
-                        seq[s],
-                        &Cmd::Lend {
-                            account,
-                            asset,
-                            amount: lend,
-                        },
-                    ) {
-                        Ok(Reply::Other(_)) => {}
-                        other => die(&format!("lend for account {account}: {other:?}")),
+            for &g in &ctx().credit {
+                for account in 1..=accounts {
+                    let s = (account % n) as usize;
+                    for asset in ctx().assets.clone() {
+                        seq[s] += 1;
+                        match gws[s].cmd(
+                            client + s as u64,
+                            seq[s],
+                            &Cmd::Lend {
+                                group: g as u16,
+                                account,
+                                asset,
+                                amount: lend,
+                            },
+                        ) {
+                            Ok(Reply::Other(_)) => {}
+                            other => die(&format!("lend for account {account}: {other:?}")),
+                        }
                     }
                 }
             }
-            let t = tiers
-                .get(g)
-                .cloned()
-                .unwrap_or_else(|| die("lend needs --tier"));
-            let mut reader = TierClient::with_auth(t, ctx().auth.clone());
-            let end = Instant::now() + Duration::from_secs(timeout);
-            loop {
-                let st = match reader.slice_state() {
-                    Ok(Ok(st)) => st,
-                    other => die(&format!("slice state: {other:?}")),
-                };
-                let mut sl = Slice::new(ctx().config.ledger_config(0), g as u16);
-                sl.restore(&st.snapshot)
-                    .unwrap_or_else(|e| die(&format!("slice snapshot: {e}")));
-                let short = (1..=accounts)
-                    .flat_map(|a| ctx().assets.iter().map(move |&x| (a, x)))
-                    .filter(|&(a, x)| sl.total(a, x) < lend)
-                    .count();
-                if short == 0 {
-                    println!("lent {lend} of every asset to {accounts} accounts; the group has it");
-                    break;
+            for &g in &ctx().credit {
+                let t = tiers
+                    .get(g)
+                    .cloned()
+                    .unwrap_or_else(|| die("lend needs --tier"));
+                let mut reader = TierClient::with_auth(t, ctx().auth.clone());
+                let end = Instant::now() + Duration::from_secs(timeout);
+                loop {
+                    let st = match reader.slice_state() {
+                        Ok(Ok(st)) => st,
+                        other => die(&format!("slice state: {other:?}")),
+                    };
+                    let mut sl = Slice::new(ctx().config.ledger_config(0), g as u16);
+                    sl.restore(&st.snapshot)
+                        .unwrap_or_else(|e| die(&format!("slice snapshot: {e}")));
+                    let short = (1..=accounts)
+                        .flat_map(|a| ctx().assets.iter().map(move |&x| (a, x)))
+                        .filter(|&(a, x)| sl.total(a, x) < lend)
+                        .count();
+                    if short == 0 {
+                        println!(
+                            "lent {lend} of every asset to {accounts} accounts; group {g} has it"
+                        );
+                        break;
+                    }
+                    if Instant::now() > end {
+                        die(&format!(
+                            "{short} slices of group {g} still short after {timeout}s: is the forwarder running?"
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(300));
                 }
-                if Instant::now() > end {
-                    die(&format!(
-                        "{short} slices still short after {timeout}s: is the forwarder running?"
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(300));
             }
         }
         "drain" => {
@@ -638,13 +659,18 @@ fn main() {
                 })
                 .collect();
             drain(addrs, orders, timeout, base & !0xff);
-            if let Some(g) = ctx().credit {
-                if !slice_orders.is_empty() {
+            for &g in &ctx().credit {
+                let mine: Vec<(u64, u64)> = slice_orders
+                    .iter()
+                    .copied()
+                    .filter(|(id, _)| ((id >> 48) & 0x7fff) as usize == g)
+                    .collect();
+                if !mine.is_empty() {
                     let t = tiers
                         .get(g)
                         .cloned()
                         .unwrap_or_else(|| die("drain with slice orders needs --tier"));
-                    drain_slice(t, slice_orders, timeout, g as u16);
+                    drain_slice(t, mine, timeout, g as u16);
                 }
             }
         }

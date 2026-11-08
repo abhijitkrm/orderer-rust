@@ -16,7 +16,7 @@
 #     acknowledged (an independent count).
 #
 # With SLICES=1 (or scripts/exchange-slices-failover.sh) it also runs phase 2: matching
-# group 0 runs in credit mode, a slice driver lends and recalls credit, the load enters
+# groups 0..CREDIT_GROUPS-1 (default 1) run in credit mode, a slice driver lends and recalls credit, the load enters
 # part of its orders at that group directly (and withdraws large amounts that compete
 # with lent funds), the slice driver is among the processes killed, and the audit reads
 # the group's slice and checks, once the system is at rest, the exact identity that ties

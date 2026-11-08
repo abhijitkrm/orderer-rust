@@ -169,6 +169,7 @@ fn phase2(partitions: u32, epoch: u64) -> (f64, f64) {
     let grants: Vec<OutMsg> = (1..=ACCOUNTS)
         .flat_map(|a| {
             [BTC, USD].map(|asset| OutMsg::Grant {
+                group: 0,
                 account: a,
                 asset,
                 amount: 1 << 100,

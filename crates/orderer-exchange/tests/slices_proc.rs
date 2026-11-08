@@ -191,6 +191,7 @@ impl World {
         let r = self.cmd(
             shard,
             Cmd::Lend {
+                group: 0,
                 account,
                 asset,
                 amount,
@@ -460,6 +461,7 @@ fn a_withdrawal_can_only_draw_on_available_funds_not_lent_ones() {
     let r = w.cmd(
         0,
         Cmd::Recall {
+            group: 0,
             account: 2,
             asset: USD,
             amount: 800,
@@ -501,6 +503,7 @@ fn the_audit_catches_credit_the_ledger_never_lent() {
             0,
             0,
             &[OutMsg::Grant {
+                group: 0,
                 account: 2,
                 asset: USD,
                 amount: 5_000,
@@ -618,7 +621,7 @@ fn a_thinned_forwarder_sends_each_group_only_its_own_messages() {
     ];
     let mut f = ForwarderRelay::new(0, 2).thinned(Thinning {
         map,
-        credit_group: None,
+        credit_mask: 0,
     });
     f.chaos = 2; // duplicates and overlaps of every kind, too
     let end = Instant::now() + Duration::from_secs(20);

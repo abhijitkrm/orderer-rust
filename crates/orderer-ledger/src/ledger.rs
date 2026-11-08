@@ -167,12 +167,16 @@ pub enum Event {
     /// Phase 2, from a matching group's credit slice (`CREDIT-SLICES.md`): the
     /// account's money in the slice grew by `amount` (trade proceeds, net of fee).
     SliceIn {
+        /// The matching group whose slice this concerns.
+        group: u16,
         account: AccountId,
         asset: AssetId,
         amount: Amount,
     },
     /// The account's money in the slice shrank by `amount` (trades paid).
     SliceOut {
+        /// The matching group whose slice this concerns.
+        group: u16,
         account: AccountId,
         asset: AssetId,
         amount: Amount,
@@ -184,6 +188,8 @@ pub enum Event {
     },
     /// The slice handed back `amount` of uncommitted credit (answer to a recall).
     Returned {
+        /// The matching group whose slice this concerns.
+        group: u16,
         account: AccountId,
         asset: AssetId,
         amount: Amount,
@@ -280,6 +286,8 @@ pub enum Cmd {
     /// Phase 2: lend `amount` of the account's available balance to the matching
     /// group as a credit slice (a `Grant` goes out through the outbox).
     Lend {
+        /// The credit group the funds are lent to (below [`SLICE_SHARD_BIT`]).
+        group: u16,
         account: AccountId,
         asset: AssetId,
         amount: Amount,
@@ -288,6 +296,7 @@ pub enum Cmd {
     /// uncommitted slice. The funds return as a `Returned` event; a withdrawal
     /// can only draw on `available`, never on lent funds.
     Recall {
+        group: u16,
         account: AccountId,
         asset: AssetId,
         amount: Amount,
@@ -348,12 +357,15 @@ pub enum OutMsg {
     },
     /// Phase 2: `credit += amount` for the account in the group's slice.
     Grant {
+        /// The credit group this is addressed to.
+        group: u16,
         account: AccountId,
         asset: AssetId,
         amount: Amount,
     },
     /// Phase 2: return up to `amount` of the account's uncommitted credit.
     Recall {
+        group: u16,
         account: AccountId,
         asset: AssetId,
         amount: Amount,
@@ -380,6 +392,8 @@ pub enum Reject {
     ReservedAccount,
     /// A time-stamped command inside a time-stamped command.
     Nested,
+    /// A phase 2 command names a credit group number at or above [`SLICE_SHARD_BIT`].
+    BadGroup,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -450,10 +464,25 @@ pub struct Ledger {
     pub(crate) adjust_log: VecDeque<Adjustment>,
     /// Phase 2: what each account has lent to the group, by asset.
     pub(crate) lent: Tracked<(AccountId, AssetId), Amount>,
+    /// The same money by credit group: `lent[(a, x)] == sum over g of lent_g[(a, x, g)]`.
+    pub(crate) lent_g: Tracked<(AccountId, AssetId, u16), Amount>,
+    /// Per `(asset, group)` flows, whose sums over groups are the four maps below.
+    pub(crate) group_flow: BTreeMap<(AssetId, u16), GroupFlow>,
     pub(crate) lent_granted: BTreeMap<AssetId, Amount>,
     pub(crate) lent_returned: BTreeMap<AssetId, Amount>,
     pub(crate) slice_in: BTreeMap<AssetId, Amount>,
     pub(crate) slice_out: BTreeMap<AssetId, Amount>,
+}
+
+/// What one credit group has been granted, has returned, and has reported moving
+/// into and out of its slices, of one asset. Locally, per group,
+/// `lent_to_group + returned + out == granted + in`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GroupFlow {
+    pub granted: Amount,
+    pub returned: Amount,
+    pub slice_in: Amount,
+    pub slice_out: Amount,
 }
 
 fn side_u(s: Side) -> u64 {
@@ -489,6 +518,15 @@ fn order_cell(id: &OrderId, o: &Order) -> Lane {
 
 fn lent_cell(k: &(AccountId, AssetId), v: &Amount) -> Lane {
     Mix::new(3).u64(k.0).u64(k.1 as u64).u128(*v).finish()
+}
+
+fn lent_g_cell(k: &(AccountId, AssetId, u16), v: &Amount) -> Lane {
+    Mix::new(5)
+        .u64(k.0)
+        .u64(k.1 as u64)
+        .u64(k.2 as u64)
+        .u128(*v)
+        .finish()
 }
 
 fn pending_cell(id: &u64, v: &(AccountId, AssetId, Amount)) -> Lane {
@@ -533,15 +571,27 @@ pub(crate) fn out_cell(idx: u64, m: &OutMsg) -> Lane {
             .u64(qty),
         OutMsg::Cancel { order, symbol } => x.u64(2).u64(order).u64(symbol as u64),
         OutMsg::Grant {
+            group,
             account,
             asset,
             amount,
-        } => x.u64(3).u64(account).u64(asset as u64).u128(amount),
+        } => x
+            .u64(3)
+            .u64(group as u64)
+            .u64(account)
+            .u64(asset as u64)
+            .u128(amount),
         OutMsg::Recall {
+            group,
             account,
             asset,
             amount,
-        } => x.u64(4).u64(account).u64(asset as u64).u128(amount),
+        } => x
+            .u64(4)
+            .u64(group as u64)
+            .u64(account)
+            .u64(asset as u64)
+            .u128(amount),
     };
     x.finish()
 }
@@ -601,6 +651,8 @@ impl Ledger {
             adjusted_out: BTreeMap::new(),
             adjust_log: VecDeque::new(),
             lent: Tracked::new(),
+            lent_g: Tracked::new(),
+            group_flow: BTreeMap::new(),
             lent_granted: BTreeMap::new(),
             lent_returned: BTreeMap::new(),
             slice_in: BTreeMap::new(),
@@ -673,6 +725,42 @@ impl Ledger {
     pub fn lent(&self, account: AccountId, asset: AssetId) -> Amount {
         self.lent.get(&(account, asset)).copied().unwrap_or(0)
     }
+    /// What `account` has lent to credit group `group`, of `asset`.
+    pub fn lent_to(&self, account: AccountId, asset: AssetId, group: u16) -> Amount {
+        self.lent_g
+            .get(&(account, asset, group))
+            .copied()
+            .unwrap_or(0)
+    }
+    /// Every `(account, asset)` with funds lent to `group`, and how much.
+    pub fn lent_entries_of(
+        &self,
+        group: u16,
+    ) -> impl Iterator<Item = ((AccountId, AssetId), Amount)> + '_ {
+        self.lent_g
+            .iter()
+            .filter(move |(k, _)| k.2 == group)
+            .map(|(k, v)| ((k.0, k.1), *v))
+    }
+    /// Everything lent of `asset` to `group` on this shard.
+    pub fn lent_total_to(&self, asset: AssetId, group: u16) -> Amount {
+        self.lent_g
+            .iter()
+            .filter(|(k, _)| k.1 == asset && k.2 == group)
+            .map(|(_, v)| *v)
+            .sum()
+    }
+    /// The phase 2 flows of one credit group and asset.
+    pub fn group_flow(&self, asset: AssetId, group: u16) -> GroupFlow {
+        self.group_flow
+            .get(&(asset, group))
+            .copied()
+            .unwrap_or_default()
+    }
+    /// Every credit group this shard has granted to or heard from.
+    pub fn credit_groups(&self) -> BTreeSet<u16> {
+        self.group_flow.keys().map(|k| k.1).collect()
+    }
     /// Every `(account, asset)` with funds lent to the matching group, and how much.
     pub fn lent_entries(&self) -> impl Iterator<Item = ((AccountId, AssetId), Amount)> + '_ {
         self.lent.iter().map(|(k, v)| (*k, *v))
@@ -699,6 +787,8 @@ impl Ledger {
     /// True once any phase 2 state exists (decides the snapshot format).
     pub(crate) fn has_slice_state(&self) -> bool {
         !(self.lent.is_empty()
+            && self.lent_g.is_empty()
+            && self.group_flow.is_empty()
             && self.lent_granted.is_empty()
             && self.lent_returned.is_empty()
             && self.slice_in.is_empty()
@@ -727,27 +817,38 @@ impl Ledger {
         }
         take
     }
-    fn add_lent(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> bool {
-        let e = self.lent.get_or_insert_with((account, asset), || 0);
-        match e.checked_add(amount) {
-            Some(v) => {
-                *e = v;
-                true
-            }
-            None => false,
-        }
-    }
-    fn sub_lent(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> bool {
+    fn add_lent(&mut self, account: AccountId, asset: AssetId, group: u16, amount: Amount) -> bool {
         let have = self.lent(account, asset);
-        if have < amount {
+        let have_g = self.lent_to(account, asset, group);
+        let (Some(v), Some(vg)) = (have.checked_add(amount), have_g.checked_add(amount)) else {
+            return false;
+        };
+        self.lent.insert((account, asset), v);
+        self.lent_g.insert((account, asset, group), vg);
+        true
+    }
+    /// Lowers what the account has lent to `group`; refuses (changing nothing) when
+    /// that group does not hold `amount` of it, whatever other groups hold.
+    fn sub_lent(&mut self, account: AccountId, asset: AssetId, group: u16, amount: Amount) -> bool {
+        let have_g = self.lent_to(account, asset, group);
+        if have_g < amount {
             return false;
         }
+        let have = self.lent(account, asset);
         if have == amount {
             self.lent.remove(&(account, asset));
         } else {
             self.lent.insert((account, asset), have - amount);
         }
+        if have_g == amount {
+            self.lent_g.remove(&(account, asset, group));
+        } else {
+            self.lent_g.insert((account, asset, group), have_g - amount);
+        }
         true
+    }
+    fn flow(&mut self, asset: AssetId, group: u16) -> &mut GroupFlow {
+        self.group_flow.entry((asset, group)).or_default()
     }
 
     /// Everything this shard holds of `asset`: balances, fees, funds in
@@ -820,12 +921,13 @@ impl Ledger {
     /// [`Ledger::deep_digest`] (SHA-256 of the whole snapshot, O(state)) for that.
     pub fn digest(&self) -> [u8; 32] {
         let mut b = Vec::with_capacity(512);
-        b.extend_from_slice(b"orderer-ledger-digest/2");
+        b.extend_from_slice(b"orderer-ledger-digest/3");
         self.small_state(&mut b);
         let lanes = [
             self.balances.lane(balance_cell),
             self.orders.lane(order_cell),
             self.lent.lane(lent_cell),
+            self.lent_g.lane(lent_g_cell),
             self.pending.lane(pending_cell),
             self.outbox_acc,
             self.ids_acc[0],
@@ -839,6 +941,7 @@ impl Ledger {
             self.balances.len(),
             self.orders.len(),
             self.lent.len(),
+            self.lent_g.len(),
             self.pending.len(),
             self.outbox.len(),
             self.deposit_ids.len(),
@@ -883,6 +986,14 @@ impl Ledger {
             b.extend_from_slice(&(m.len() as u32).to_le_bytes());
             for (k, v) in m {
                 b.extend_from_slice(&k.to_le_bytes());
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        b.extend_from_slice(&(self.group_flow.len() as u32).to_le_bytes());
+        for ((asset, group), f) in &self.group_flow {
+            b.extend_from_slice(&asset.to_le_bytes());
+            b.extend_from_slice(&group.to_le_bytes());
+            for v in [f.granted, f.returned, f.slice_in, f.slice_out] {
                 b.extend_from_slice(&v.to_le_bytes());
             }
         }
@@ -994,15 +1105,17 @@ impl Ledger {
                 external_id,
             } => self.fee_withdraw(asset, amount, external_id),
             Cmd::Lend {
+                group,
                 account,
                 asset,
                 amount,
-            } => self.lend(account, asset, amount),
+            } => self.lend(group, account, asset, amount),
             Cmd::Recall {
+                group,
                 account,
                 asset,
                 amount,
-            } => self.recall(account, asset, amount),
+            } => self.recall(group, account, asset, amount),
             Cmd::At {
                 ts_ns,
                 cmd: ref inner,
@@ -1016,7 +1129,10 @@ impl Ledger {
         }
     }
 
-    fn lend(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> Outcome {
+    fn lend(&mut self, group: u16, account: AccountId, asset: AssetId, amount: Amount) -> Outcome {
+        if group >= SLICE_SHARD_BIT {
+            return Outcome::Rejected(Reject::BadGroup);
+        }
         if amount == 0 {
             return Outcome::Rejected(Reject::BadAmount);
         }
@@ -1029,11 +1145,25 @@ impl Ledger {
         {
             return Outcome::Rejected(Reject::Overflow);
         }
+        if self
+            .lent_to(account, asset, group)
+            .checked_add(amount)
+            .is_none()
+            || self
+                .group_flow(asset, group)
+                .granted
+                .checked_add(amount)
+                .is_none()
+        {
+            return Outcome::Rejected(Reject::Overflow);
+        }
         self.bal(account, asset).available -= amount;
-        self.add_lent(account, asset, amount);
+        self.add_lent(account, asset, group, amount);
         bump(&mut self.lent_granted, asset, amount);
+        self.flow(asset, group).granted += amount;
         let outbox = self.outbox_next();
         self.out_push(OutMsg::Grant {
+            group,
             account,
             asset,
             amount,
@@ -1041,16 +1171,26 @@ impl Ledger {
         Outcome::Lent { outbox }
     }
 
-    fn recall(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> Outcome {
+    fn recall(
+        &mut self,
+        group: u16,
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
+    ) -> Outcome {
+        if group >= SLICE_SHARD_BIT {
+            return Outcome::Rejected(Reject::BadGroup);
+        }
         if amount == 0 {
             return Outcome::Rejected(Reject::BadAmount);
         }
-        let lent = self.lent(account, asset);
+        let lent = self.lent_to(account, asset, group);
         if lent == 0 {
             return Outcome::Rejected(Reject::Insufficient);
         }
         let outbox = self.outbox_next();
         self.out_push(OutMsg::Recall {
+            group,
             account,
             asset,
             amount: amount.min(lent),
@@ -1358,25 +1498,28 @@ impl Ledger {
             } => self.settle_trade(buy, sell, price, qty, taker_is_buy),
             Event::Closed { order } => self.settle_closed(order),
             Event::SliceIn {
+                group,
                 account,
                 asset,
                 amount,
-            } => self.settle_slice_in(account, asset, amount),
+            } => self.settle_slice_in(group, account, asset, amount),
             Event::SliceOut {
+                group,
                 account,
                 asset,
                 amount,
-            } => self.settle_slice_out(account, asset, amount),
+            } => self.settle_slice_out(group, account, asset, amount),
             Event::SliceFee { asset, amount } => {
                 bump(&mut self.fees, asset, amount);
                 bump(&mut self.settled_in, asset, amount);
                 amount > 0
             }
             Event::Returned {
+                group,
                 account,
                 asset,
                 amount,
-            } => self.settle_returned(account, asset, amount),
+            } => self.settle_returned(group, account, asset, amount),
         };
         // The mark advances even for an anomaly: a replay must not retry it.
         self.hw.insert(source, idx);
@@ -1388,30 +1531,62 @@ impl Ledger {
         }
     }
 
-    fn settle_slice_in(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> bool {
-        if amount == 0 || account == FEE_ACCOUNT || !self.add_lent(account, asset, amount) {
+    fn settle_slice_in(
+        &mut self,
+        group: u16,
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
+    ) -> bool {
+        if group >= SLICE_SHARD_BIT
+            || amount == 0
+            || account == FEE_ACCOUNT
+            || self
+                .group_flow(asset, group)
+                .slice_in
+                .checked_add(amount)
+                .is_none()
+            || !self.add_lent(account, asset, group, amount)
+        {
             return false;
         }
         bump(&mut self.slice_in, asset, amount);
+        self.flow(asset, group).slice_in += amount;
         bump(&mut self.settled_in, asset, amount);
         true
     }
 
-    fn settle_slice_out(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> bool {
-        if amount == 0 || !self.sub_lent(account, asset, amount) {
+    fn settle_slice_out(
+        &mut self,
+        group: u16,
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
+    ) -> bool {
+        if group >= SLICE_SHARD_BIT || amount == 0 || !self.sub_lent(account, asset, group, amount)
+        {
             return false;
         }
         bump(&mut self.slice_out, asset, amount);
+        self.flow(asset, group).slice_out += amount;
         bump(&mut self.settled_out, asset, amount);
         true
     }
 
-    fn settle_returned(&mut self, account: AccountId, asset: AssetId, amount: Amount) -> bool {
-        if amount == 0 || !self.sub_lent(account, asset, amount) {
+    fn settle_returned(
+        &mut self,
+        group: u16,
+        account: AccountId,
+        asset: AssetId,
+        amount: Amount,
+    ) -> bool {
+        if group >= SLICE_SHARD_BIT || amount == 0 || !self.sub_lent(account, asset, group, amount)
+        {
             return false;
         }
         self.bal(account, asset).available += amount;
         bump(&mut self.lent_returned, asset, amount);
+        self.flow(asset, group).returned += amount;
         true
     }
 
@@ -1609,7 +1784,37 @@ impl Ledger {
         assets.extend(self.fees.keys());
         assets.extend(self.lent.keys().map(|k| k.1));
         assets.extend(self.lent_granted.keys());
+        assets.extend(self.group_flow.keys().map(|k| k.0));
+        let groups = self.credit_groups();
+        let mut by_group: BTreeMap<(AccountId, AssetId), Amount> = BTreeMap::new();
+        for (k, v) in self.lent_g.iter() {
+            *by_group.entry((k.0, k.1)).or_insert(0) += *v;
+        }
+        if by_group.len() != self.lent.len()
+            || by_group.iter().any(|(k, v)| self.lent.get(k) != Some(v))
+        {
+            return Err("lent by group does not add up to lent per account".into());
+        }
         for a in assets {
+            let (mut gg, mut gr, mut gi, mut go) = (0, 0, 0, 0);
+            for &g in &groups {
+                let f = self.group_flow(a, g);
+                if self.lent_total_to(a, g) + f.returned + f.slice_out != f.granted + f.slice_in {
+                    return Err(format!(
+                        "asset {a} group {g}: lent {} + returned {} + slice out {} != granted {} + slice in {}",
+                        self.lent_total_to(a, g), f.returned, f.slice_out, f.granted, f.slice_in
+                    ));
+                }
+                gg += f.granted;
+                gr += f.returned;
+                gi += f.slice_in;
+                go += f.slice_out;
+            }
+            if (gg, gr, gi, go) != self.slice_flow(a) {
+                return Err(format!(
+                    "asset {a}: group flows do not add up to the totals"
+                ));
+            }
             let (granted, returned, sin, sout) = self.slice_flow(a);
             if self.lent_total(a) + returned + sout != granted + sin {
                 return Err(format!(

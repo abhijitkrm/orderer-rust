@@ -197,11 +197,13 @@ fn route_settles_equals_the_per_shard_chains() {
                     },
                     2 => Event::Closed { order: id(rnd(9)) },
                     3 => Event::SliceIn {
+                        group: 0,
                         account: rnd(7),
                         asset: 1,
                         amount: 1,
                     },
                     4 => Event::Returned {
+                        group: 0,
                         account: rnd(7),
                         asset: 1,
                         amount: 1,

@@ -47,8 +47,9 @@ pub struct ForwarderRelay {
 #[derive(Clone, Copy, Debug)]
 pub struct Thinning {
     pub map: ShardMap,
-    /// The group in credit mode, the only one that takes grants and recalls.
-    pub credit_group: Option<usize>,
+    /// Bit `g` set when group `g` is in credit mode: only those take grants and
+    /// recalls, and each takes only the ones addressed to it.
+    pub credit_mask: u64,
 }
 
 impl Thinning {
@@ -57,7 +58,9 @@ impl Thinning {
             OutMsg::Submit { symbol, .. }
             | OutMsg::SubmitIoc { symbol, .. }
             | OutMsg::Cancel { symbol, .. } => self.map.group_of(symbol) as usize == group,
-            OutMsg::Grant { .. } | OutMsg::Recall { .. } => self.credit_group == Some(group),
+            OutMsg::Grant { group: g, .. } | OutMsg::Recall { group: g, .. } => {
+                g as usize == group && group < 64 && self.credit_mask >> group & 1 == 1
+            }
         }
     }
 }
@@ -400,14 +403,16 @@ pub struct DriverStep {
 pub struct SliceDriver {
     pub cfg: PolicyConfig,
     states: Vec<PolicyState>,
-    /// The credit group's number (see `CreditConfig::group`).
+    /// The credit group this driver serves (see `CreditConfig::group`); one driver
+    /// per credit group, each lending and recalling for its own group only.
     pub group: u16,
     /// Close the credit epoch each step.
     pub tick: bool,
 }
 
 impl SliceDriver {
-    pub fn new(cfg: PolicyConfig, shards: usize, group: u16) -> SliceDriver {
+    pub fn new(mut cfg: PolicyConfig, shards: usize, group: u16) -> SliceDriver {
+        cfg.group = group;
         SliceDriver {
             cfg,
             states: vec![PolicyState::new(); shards],
@@ -440,12 +445,13 @@ impl SliceDriver {
             let (base, msgs) = l.outbox();
             for (i, m) in msgs.enumerate() {
                 if let OutMsg::Grant {
+                    group,
                     account,
                     asset,
                     amount,
                 } = *m
                 {
-                    if base + i as u64 >= cursor {
+                    if group == self.group && base + i as u64 >= cursor {
                         *pending.entry((account, asset)).or_default() += amount;
                     }
                 }

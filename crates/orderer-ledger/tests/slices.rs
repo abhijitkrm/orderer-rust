@@ -148,11 +148,13 @@ impl Group {
                     .submit_tif(order, symbol, side, price, qty, true),
                 OutMsg::Cancel { order, symbol } => self.matcher.cancel(order, symbol),
                 OutMsg::Grant {
+                    group: _,
                     account,
                     asset,
                     amount,
                 } => self.slice.grant(account, asset, amount),
                 OutMsg::Recall {
+                    group: _,
                     account,
                     asset,
                     amount,
@@ -569,6 +571,7 @@ impl Sys {
                 self.ledger_apply(
                     shard,
                     Cmd::Lend {
+                        group: 0,
                         account,
                         asset,
                         amount,
@@ -580,6 +583,7 @@ impl Sys {
                 self.ledger_apply(
                     shard,
                     Cmd::Recall {
+                        group: 0,
                         account,
                         asset,
                         amount,
@@ -662,6 +666,7 @@ impl Sys {
 
     fn policy_cfg() -> PolicyConfig {
         PolicyConfig {
+            group: 0,
             chunk: ASSETS.iter().map(|a| (*a, 20_000u128)).collect(),
             low_water_pct: 30,
             account_cap: ASSETS.iter().map(|a| (*a, 70_000u128)).collect(),
@@ -824,6 +829,7 @@ impl Sys {
         let mut t = 0i128;
         for (i, e) in self.group.gstream.iter().enumerate() {
             if let Event::Returned {
+                group: 0,
                 account,
                 asset: a,
                 amount,
@@ -964,6 +970,7 @@ fn run(n: usize, seed: u64, steps: usize) -> Stats {
                     s.ledger_apply(
                         sh,
                         Cmd::Recall {
+                            group: 0,
                             account,
                             asset,
                             amount: lent,

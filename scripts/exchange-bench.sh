@@ -28,7 +28,7 @@ start_cluster
 MODE=phase1
 if [[ "$SLICES" == 1 ]]; then
   MODE=phase2 # orders go to the credit group directly, against slices lent below
-  "$BIN/exchange-load" lend --config "$CONF" --ledgers "$ALL_GATEWAYS" --tier "$ALL_TIER_EX" --accounts "$ACCOUNTS" --acked "$TMP/acked-lend" --lend "${LEND:-8000000}"
+  "$BIN/exchange-load" lend --config "$CONF" --ledgers "$ALL_GATEWAYS" --tier "$ALL_TIER_EX" --accounts "$ACCOUNTS" --acked "$TMP/acked-lend" --lend "${LEND:-$((8000000 / CREDIT_GROUPS))}"
 fi
 echo "topology: $NS ledger shards x3, $MG matching groups x3, fsync=$FSYNC, auth=$([[ -n "${ORDERER_KEY:-}" ]] && echo on || echo off), chaos=$CHAOS"
 for r in $RATES; do

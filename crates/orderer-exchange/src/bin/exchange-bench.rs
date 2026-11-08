@@ -95,6 +95,7 @@ struct Out {
     errors: u64,
     late: u64,
     max_queue_us: u64,
+    reject_kinds: std::collections::BTreeMap<String, u64>,
 }
 
 /// A request released by the dispatcher at its due time.
@@ -152,14 +153,19 @@ fn worker(
     accounts: u64,
     seed: u64,
     session: u64,
-    slice_tier: Option<Vec<std::net::SocketAddr>>,
+    slice_tiers: Option<Vec<Vec<std::net::SocketAddr>>>,
 ) -> Out {
-    let mut slice: Option<SliceClient> = slice_tier.map(|a| {
-        SliceClient::new(
-            TierClient::with_auth(a, auth.clone()),
-            SliceClient::fresh_id(),
-        )
-    });
+    // phase 2: one client per matching group (indexed by group); only credit groups are used
+    let mut slices: Vec<SliceClient> = slice_tiers
+        .into_iter()
+        .flatten()
+        .map(|a| {
+            SliceClient::new(
+                TierClient::with_auth(a, auth.clone()),
+                SliceClient::fresh_id(),
+            )
+        })
+        .collect();
     let n = ledgers.len() as u64;
     let mut gws: Vec<GatewayClient> = ledgers
         .into_iter()
@@ -194,7 +200,8 @@ fn worker(
         };
         let price = 95 + rng.below(11);
         let qty = 1 + rng.below(5);
-        if let Some(sc) = slice.as_mut() {
+        if !slices.is_empty() {
+            let sc = &mut slices[group];
             let r = sc.enter(account, symbol, side, price, qty, false);
             let finished = Instant::now();
             if job.due < warm_until {
@@ -210,7 +217,10 @@ fn worker(
                 Ok(Ok(_)) => out
                     .ack_us
                     .push(finished.saturating_duration_since(job.due).as_micros() as u64),
-                Ok(Err(_)) => out.rejected += 1,
+                Ok(Err(e)) => {
+                    out.rejected += 1;
+                    *out.reject_kinds.entry(format!("{e:?}")).or_insert(0) += 1;
+                }
                 Err(_) => {
                     out.errors += 1;
                     let _ = sc.resolve_pending();
@@ -347,21 +357,20 @@ fn main() {
         die("--ledgers and --tier must list every shard and every group of the config");
     }
     let phase2 = mode == "phase2";
-    let credit = cfg.credit.map(|c| c.group as usize);
-    if phase2 && credit.is_none() {
+    if phase2 && cfg.credit.is_none() {
         die("--mode phase2 needs credit_group in the config");
     }
     let symbols: Vec<(u32, usize)> = cfg
         .symbols
         .iter()
         .map(|s| (s.id, cfg.group_of(s.id) as usize))
-        .filter(|(_, g)| !phase2 || Some(*g) == credit)
+        .filter(|(_, g)| !phase2 || cfg.is_credit(*g as u32))
         .collect();
     if symbols.is_empty() {
-        die("the credit group owns no symbol");
+        die("the credit groups own no symbol");
     }
-    let slice_tier = if phase2 {
-        Some(tier_addrs[credit.expect("checked")].clone())
+    let slice_tiers = if phase2 {
+        Some(tier_addrs.clone())
     } else {
         None
     };
@@ -420,7 +429,7 @@ fn main() {
         .map(|k| {
             let (q, done) = (q.clone(), done.clone());
             let (l, a, sy) = (ledger_addrs.clone(), auth.clone(), symbols.clone());
-            let st = slice_tier.clone();
+            let st = slice_tiers.clone();
             let sess = (session.wrapping_add(k << 20)) & !0xff;
             std::thread::spawn(move || {
                 worker(q, done, warm_until, l, a, sy, accounts, seed, sess, st)
@@ -436,6 +445,9 @@ fn main() {
         tot.sent += o.sent;
         tot.rejected += o.rejected;
         tot.errors += o.errors;
+        for (k, n) in o.reject_kinds {
+            *tot.reject_kinds.entry(k).or_insert(0) += n;
+        }
         tot.late += o.late;
         tot.max_queue_us = tot.max_queue_us.max(o.max_queue_us);
     }
@@ -502,6 +514,9 @@ fn main() {
             dispatcher_lag_us as f64 / 1e3,
             polls
         );
+    }
+    if !csv && !tot.reject_kinds.is_empty() {
+        println!("  rejects by reason: {:?}", tot.reject_kinds);
     }
     report(&label, "order-to-ack", tot.ack_us, csv);
     if !phase2 {

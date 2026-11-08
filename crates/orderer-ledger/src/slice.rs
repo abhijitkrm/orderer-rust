@@ -32,6 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 type Key = (AccountId, AssetId);
 
 pub struct Slice {
+    group: u16,
     engine: Ledger,
     p: BTreeMap<Key, Amount>,
     q: BTreeMap<Key, Amount>,
@@ -53,6 +54,7 @@ impl Slice {
             panic!("invalid slice config: {e}");
         }
         Slice {
+            group,
             engine: Ledger::new_unchecked(cfg),
             p: BTreeMap::new(),
             q: BTreeMap::new(),
@@ -60,6 +62,11 @@ impl Slice {
             dirty: BTreeSet::new(),
             next_idx: 1,
         }
+    }
+
+    /// The matching group this slice belongs to; its reports carry this number.
+    pub fn group(&self) -> u16 {
+        self.group
     }
 
     /// The embedded ledger, for inspection and invariant checks.
@@ -146,6 +153,7 @@ impl Slice {
             let e = self.q.entry((account, asset)).or_insert(0);
             *e = e.saturating_add(take);
             out.push(Event::Returned {
+                group: self.group,
                 account,
                 asset,
                 amount: take,
@@ -246,6 +254,7 @@ impl Slice {
             let amount = lhs - p;
             self.p.insert(key, lhs);
             out.push(Event::SliceIn {
+                group: self.group,
                 account: key.0,
                 asset: key.1,
                 amount,
@@ -254,6 +263,7 @@ impl Slice {
             let amount = p - lhs;
             self.q.insert(key, q + amount);
             out.push(Event::SliceOut {
+                group: self.group,
                 account: key.0,
                 asset: key.1,
                 amount,

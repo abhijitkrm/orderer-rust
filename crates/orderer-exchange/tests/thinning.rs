@@ -133,27 +133,32 @@ struct Sim {
     net: Vec<(usize, Vec<u8>)>,
     rng: Rng,
     faults: bool,
-    /// credit model of group 0: free credit per (account, asset)
-    credit: BTreeMap<(u64, u32), u128>,
+    /// the groups in credit mode
+    credit_groups: Vec<usize>,
+    /// credit model of each credit group: free credit per (group, account, asset)
+    credit: BTreeMap<(usize, u64, u32), u128>,
 }
 
 impl Sim {
-    fn new(seed: u64) -> Sim {
+    fn new(seed: u64, credit_groups: &[usize]) -> Sim {
         let map = ShardMap::new(GROUPS);
         Sim {
             outbox: Vec::new(),
             symbol_of: BTreeMap::new(),
             next_order: 1,
-            groups: (0..GROUPS).map(|g| group(g, g == 0)).collect(),
+            groups: (0..GROUPS)
+                .map(|g| group(g, credit_groups.contains(&(g as usize))))
+                .collect(),
             map,
             thin: Thinning {
                 map,
-                credit_group: Some(0),
+                credit_mask: credit_groups.iter().fold(0, |m, g| m | 1 << g),
             },
             known: vec![0; GROUPS as usize],
             net: Vec::new(),
             rng: Rng(seed | 1),
             faults: true,
+            credit_groups: credit_groups.to_vec(),
             credit: BTreeMap::new(),
         }
     }
@@ -163,7 +168,7 @@ impl Sim {
             OutMsg::Submit { symbol, .. }
             | OutMsg::SubmitIoc { symbol, .. }
             | OutMsg::Cancel { symbol, .. } => Some(self.map.group_of(symbol) as usize),
-            OutMsg::Grant { .. } | OutMsg::Recall { .. } => Some(0),
+            OutMsg::Grant { group, .. } | OutMsg::Recall { group, .. } => Some(group as usize),
         }
     }
 
@@ -210,14 +215,19 @@ impl Sim {
             }
             _ => {
                 let (account, asset) = (1 + self.rng.below(4), USD);
+                let group = self.credit_groups
+                    [self.rng.below(self.credit_groups.len() as u64) as usize]
+                    as u16;
                 if self.rng.below(3) == 0 {
                     OutMsg::Recall {
+                        group,
                         account,
                         asset,
                         amount: 1 + self.rng.below(300) as u128,
                     }
                 } else {
                     OutMsg::Grant {
+                        group,
                         account,
                         asset,
                         amount: 1 + self.rng.below(500) as u128,
@@ -227,16 +237,26 @@ impl Sim {
         };
         match m {
             OutMsg::Grant {
-                account,
-                asset,
-                amount,
-            } => *self.credit.entry((account, asset)).or_default() += amount,
-            OutMsg::Recall {
+                group,
                 account,
                 asset,
                 amount,
             } => {
-                let c = self.credit.entry((account, asset)).or_default();
+                *self
+                    .credit
+                    .entry((group as usize, account, asset))
+                    .or_default() += amount
+            }
+            OutMsg::Recall {
+                group,
+                account,
+                asset,
+                amount,
+            } => {
+                let c = self
+                    .credit
+                    .entry((group as usize, account, asset))
+                    .or_default();
                 *c -= amount.min(*c);
             }
             _ => {}
@@ -359,8 +379,8 @@ impl Sim {
     }
 }
 
-fn run(seed: u64, steps: usize) {
-    let mut s = Sim::new(seed);
+fn run(seed: u64, steps: usize, credit_groups: &[usize]) {
+    let mut s = Sim::new(seed, credit_groups);
     for _ in 0..steps {
         s.step();
     }
@@ -370,26 +390,74 @@ fn run(seed: u64, steps: usize) {
         s.check(g);
         assert_eq!(s.groups[g].view.cursor(0), n);
     }
-    // the credit group applied every grant and recall exactly once
-    let slice_total: u128 = s.groups[0]
-        .view
-        .with_slice(|sl| (1..=4u64).map(|a| sl.total(a, USD)).sum())
-        .unwrap();
-    let model: u128 = (1..=4u64)
-        .map(|a| s.credit.get(&(a, USD)).copied().unwrap_or(0))
-        .sum();
-    assert_eq!(
-        slice_total, model,
-        "seed {seed}: credit after grants and recalls"
-    );
-    // the other groups hold no credit state to speak of: grants never reach them
-    assert!(s.groups[1].view.with_slice(|_| ()).is_none());
+    for g in 0..GROUPS as usize {
+        if credit_groups.contains(&g) {
+            // a credit group applied every grant and recall addressed to it exactly once
+            let slice_total: u128 = s.groups[g]
+                .view
+                .with_slice(|sl| (1..=4u64).map(|a| sl.total(a, USD)).sum())
+                .unwrap();
+            let model: u128 = (1..=4u64)
+                .map(|a| s.credit.get(&(g, a, USD)).copied().unwrap_or(0))
+                .sum();
+            assert_eq!(
+                slice_total, model,
+                "seed {seed}: group {g}: credit after grants and recalls"
+            );
+        } else {
+            // the other groups hold no credit state: grants never reach them
+            assert!(s.groups[g].view.with_slice(|_| ()).is_none());
+        }
+    }
 }
 
 #[test]
 fn each_group_applies_exactly_its_own_messages_under_faults() {
     for seed in 1..=16u64 {
-        run(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15), 700);
+        run(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15), 700, &[0]);
+    }
+}
+
+#[test]
+fn several_credit_groups_each_get_only_their_own_grants() {
+    for seed in 1..=12u64 {
+        let seed = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        run(seed, 700, &[0, 2]);
+        run(seed, 700, &[1, 2]);
+        run(seed, 700, &[0, 1, 2]);
+    }
+}
+
+#[test]
+fn thinning_routes_a_grant_to_its_group_and_only_to_a_credit_group() {
+    let t = Thinning {
+        map: ShardMap::new(GROUPS),
+        credit_mask: 0b101,
+    };
+    let grant = |group| OutMsg::Grant {
+        group,
+        account: 1,
+        asset: USD,
+        amount: 5,
+    };
+    let recall = |group| OutMsg::Recall {
+        group,
+        account: 1,
+        asset: USD,
+        amount: 5,
+    };
+    for g in 0..GROUPS as usize {
+        for m in [grant(g as u16), recall(g as u16)] {
+            let credit = g != 1;
+            for to in 0..GROUPS as usize {
+                assert_eq!(t.owns(to, &m), credit && to == g, "to {to} msg for {g}");
+            }
+        }
+    }
+    // addressed to a group that does not exist: nobody
+    for to in 0..GROUPS as usize {
+        assert!(!t.owns(to, &grant(9)));
+        assert!(!t.owns(to, &recall(63)));
     }
 }
 
@@ -399,7 +467,7 @@ fn thinning_sends_a_fraction_of_the_outbox() {
     let map = ShardMap::new(GROUPS);
     let t = Thinning {
         map,
-        credit_group: Some(0),
+        credit_mask: 1,
     };
     let msgs: Vec<OutMsg> = (0..300u64)
         .map(|i| OutMsg::Submit {

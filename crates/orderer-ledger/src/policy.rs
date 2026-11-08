@@ -22,13 +22,16 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default)]
 pub struct PolicyConfig {
+    /// The credit group this policy feeds; `Lend`/`Recall` name it, and every
+    /// "lent" figure it uses is the ledger's for this group alone.
+    pub group: u16,
     /// Grant size by asset; an asset without one is never lent.
     pub chunk: BTreeMap<AssetId, Amount>,
     /// Refill when free credit is below this percent of the chunk.
     pub low_water_pct: u32,
     /// Most one account may have lent of an asset (absent: unlimited).
     pub account_cap: BTreeMap<AssetId, Amount>,
-    /// Most all accounts together may have lent of an asset (absent: unlimited).
+    /// Most all accounts together may have lent of an asset to this group (absent: unlimited).
     pub group_cap: BTreeMap<AssetId, Amount>,
     /// Return free credit after this long without movement (0: never).
     pub idle_ns: u64,
@@ -93,7 +96,7 @@ pub fn plan(
         let Some(&chunk) = cfg.chunk.get(&asset) else {
             continue;
         };
-        let lent = ledger.lent(account, asset);
+        let lent = ledger.lent_to(account, asset, cfg.group);
         let want = if lent == 0 {
             true
         } else {
@@ -111,7 +114,8 @@ pub fn plan(
             .map_or(Amount::MAX, |c| c.saturating_sub(lent));
         let group_room = cfg.group_cap.get(&asset).map_or(Amount::MAX, |c| {
             c.saturating_sub(
-                ledger.lent_total(asset) + group_planned.get(&asset).copied().unwrap_or(0),
+                ledger.lent_total_to(asset, cfg.group)
+                    + group_planned.get(&asset).copied().unwrap_or(0),
             )
         });
         let avail = ledger.balance(account, asset).available;
@@ -122,6 +126,7 @@ pub fn plan(
         *planned.entry((account, asset)).or_insert(0) += amount;
         *group_planned.entry(asset).or_insert(0) += amount;
         out.push(Cmd::Lend {
+            group: cfg.group,
             account,
             asset,
             amount,
@@ -129,7 +134,7 @@ pub fn plan(
     }
 
     // idle returns, and forgetting slices that no longer exist
-    let live: BTreeMap<(AccountId, AssetId), Amount> = ledger.lent_entries().collect();
+    let live: BTreeMap<(AccountId, AssetId), Amount> = ledger.lent_entries_of(cfg.group).collect();
     st.seen.retain(|k, _| live.contains_key(k));
     for (&k, &lent) in &live {
         let Some(c) = credit(k.0, k.1) else {
@@ -162,6 +167,7 @@ pub fn plan(
         }
         e.recalled = Some(now);
         out.push(Cmd::Recall {
+            group: cfg.group,
             account: k.0,
             asset: k.1,
             amount: c,

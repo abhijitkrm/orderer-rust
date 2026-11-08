@@ -149,7 +149,7 @@ fn main() {
             if !no_thin && cfg.matching_groups > 1 {
                 r = r.thinned(Thinning {
                     map: cfg.shard_map(),
-                    credit_group: cfg.credit.map(|c| c.group as usize),
+                    credit_mask: cfg.credit_mask(),
                 });
             }
             r.chaos = chaos;
@@ -211,15 +211,16 @@ fn main() {
             }
         }
         "slice-driver" => {
-            let Some(credit) = cfg.credit else {
+            if cfg.credit.is_none() {
                 die("the config has no credit_group: nothing to drive");
-            };
+            }
             let mut gws = ledger_clients(&ledgers);
             let mut ts = tier_clients(&tier);
             let mut assets: Vec<u32> = cfg.symbols.iter().flat_map(|s| [s.base, s.quote]).collect();
             assets.sort_unstable();
             assets.dedup();
             let pol = PolicyConfig {
+                group: 0,
                 chunk: assets.iter().map(|a| (*a, chunk)).collect(),
                 low_water_pct: low_water,
                 account_cap: account_cap
@@ -229,24 +230,34 @@ fn main() {
                 idle_ns: idle_ms * 1_000_000,
                 max_actions,
             };
-            let mut d = SliceDriver::new(pol, gws.len(), credit.group as u16);
+            // one driver per credit group, all in this process
+            let mut ds: Vec<SliceDriver> = cfg
+                .credit_groups()
+                .iter()
+                .map(|&g| SliceDriver::new(pol.clone(), gws.len(), g as u16))
+                .collect();
             let c2 = cfg.clone();
             let ledger_cfg = move |s: u16| c2.ledger_config(s);
             let (mut lends, mut recalls, mut refused, mut errs) = (0usize, 0usize, 0usize, 0usize);
             let t0 = Instant::now();
-            println!("slice-driver for credit group {} running", credit.group);
+            println!(
+                "slice-driver for credit groups {:?} running",
+                cfg.credit_groups()
+            );
             loop {
                 let now = t0.elapsed().as_nanos() as u64;
-                match d.step(&mut gws, &mut ts[credit.group as usize], &ledger_cfg, now) {
-                    Ok(s) => {
-                        lends += s.lends;
-                        recalls += s.recalls;
-                        refused += s.refused;
-                    }
-                    Err(e) => {
-                        errs += 1;
-                        eprintln!("slice-driver: {e}");
-                        std::thread::sleep(Duration::from_millis(200));
+                for d in ds.iter_mut() {
+                    match d.step(&mut gws, &mut ts[d.group as usize], &ledger_cfg, now) {
+                        Ok(s) => {
+                            lends += s.lends;
+                            recalls += s.recalls;
+                            refused += s.refused;
+                        }
+                        Err(e) => {
+                            errs += 1;
+                            eprintln!("slice-driver (group {}): {e}", d.group);
+                            std::thread::sleep(Duration::from_millis(200));
+                        }
                     }
                 }
                 if last_log.elapsed() > Duration::from_secs(5) {

@@ -44,6 +44,7 @@ fn ev(i: u64) -> Event {
             taker_is_buy: i % 2 == 0,
         },
         _ => Event::SliceIn {
+            group: 0,
             account: i,
             asset: 2,
             amount: i as u128 * 1_000_003,

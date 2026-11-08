@@ -5,8 +5,9 @@
 # forwarder per shard, one settler, a tick driver, an audit). Source it, then call
 # start_cluster. Settings (environment): SHARDS (2), MGROUPS (2), BASE_PORT, PROFILE
 # (release), FSYNC (relaxed:10), CHAOS (5), AUTH (1), STAMP (1: ledger leaders stamp
-# commands with their time), SLICES (0; 1 = phase 2: matching group 0 runs in credit mode
-# and a slice driver runs; CREDIT_EPOCH (64), SLICE_CHUNK (2000000), SLICE_IDLE_MS (6000)),
+# commands with their time), SLICES (0; 1 = phase 2: matching groups 0..CREDIT_GROUPS-1 run
+# in credit mode and a slice driver runs; CREDIT_GROUPS (1, at most MGROUPS), CREDIT_EPOCH
+# (64), SLICE_CHUNK (2000000), SLICE_IDLE_MS (6000)),
 # KEEP, KEEP_ALIVE.
 set -euo pipefail
 
@@ -20,6 +21,8 @@ FSYNC=${FSYNC:-relaxed:10}
 CHAOS=${CHAOS:-5} # every 5th relay delivery is also duplicated, overlapped or sent out of order (0 = off)
 STAMP=${STAMP:-1}
 SLICES=${SLICES:-0}
+CREDIT_GROUPS=${CREDIT_GROUPS:-1}
+(( CREDIT_GROUPS >= 1 && CREDIT_GROUPS <= MG )) || { echo "CREDIT_GROUPS must be between 1 and MGROUPS ($MG)" >&2; exit 2; }
 CREDIT_EPOCH=${CREDIT_EPOCH:-64}
 SLICE_CHUNK=${SLICE_CHUNK:-2000000}
 SLICE_IDLE_MS=${SLICE_IDLE_MS:-6000}
@@ -47,7 +50,8 @@ symbol = 14 base=6 quote=2 lot=1
 symbol = 15 base=7 quote=2 lot=1
 EOF
 if [[ "$SLICES" == 1 ]]; then
-  printf 'credit_group    = 0\ncredit_epoch    = %s\n' "$CREDIT_EPOCH" >>"$CONF"
+  for ((cg = 0; cg < CREDIT_GROUPS; cg++)); do printf 'credit_group    = %s\n' "$cg" >>"$CONF"; done
+  printf 'credit_epoch    = %s\n' "$CREDIT_EPOCH" >>"$CONF"
 fi
 if [[ "${AUTH:-1}" != 0 ]]; then
   ORDERER_KEY=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
